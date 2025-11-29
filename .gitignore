@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+artifacts/
+converted_docs/
+*.png
+*.jpg
+*.jpeg
+.vscode/
+.idea/
+eai-dataset/
+ManiSkill-main/
