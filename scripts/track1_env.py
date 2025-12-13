@@ -28,12 +28,156 @@ class Track1Env(BaseEnv):
         robot_uids=("so101", "so101"),
         task: str = "lift",  # "lift", "stack", "sort"
         domain_randomization: bool = True,
+        sim_distorted_images: bool = False,
         **kwargs
     ):
         self.task = task
         self.domain_randomization = domain_randomization
+        self.sim_distorted_images = sim_distorted_images
         self.grid_bounds = {}  # Will be populated in _compute_grids
+            
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
+
+        # Precompute distortion maps if needed (after super init so device is ready)
+        if self.sim_distorted_images:
+            self._setup_distortion_maps()
+
+    def _setup_distortion_maps(self):
+        """Precompute torch grid for simulating distortion via F.grid_sample."""
+        import cv2
+        import torch
+        
+        # Camera Parameters
+        W, H = 640, 480
+        
+        # Intrinsic Matrix (K)
+        self.mtx_intrinsic = np.array([
+            [570.21740069, 0., 327.45975405],
+            [0., 570.1797441, 260.83642155],
+            [0., 0., 1.]
+        ], dtype=np.float64)
+        
+        # Distortion Coefficients (D)
+        self.dist_coeffs = np.array([
+            -0.735413911, 0.949258417, 0.000189059234, -0.00200351391, -0.864150312
+        ], dtype=np.float64)
+        
+        # 1. Optimal New Camera Matrix (P) for rectification (alpha=1.0)
+        image_size = (W, H)
+        new_mtx, _ = cv2.getOptimalNewCameraMatrix(
+            self.mtx_intrinsic, self.dist_coeffs, image_size, 1.0, image_size
+        )
+        new_mtx[0, 2] = W / 2
+        new_mtx[1, 2] = H / 2
+        
+        # 2. Grid generation for target distorted image
+        xs = np.arange(W)
+        ys = np.arange(H)
+        xx, yy = np.meshgrid(xs, ys)
+        
+        points = np.stack([xx.ravel(), yy.ravel()], axis=-1).astype(np.float32)
+        points = points.reshape(-1, 1, 2)
+        
+        # 3. undistortPoints to find source coordinates (in rectified image)
+        undistorted_pts = cv2.undistortPoints(
+            points, 
+            cameraMatrix=self.mtx_intrinsic, 
+            distCoeffs=self.dist_coeffs, 
+            R=None, 
+            P=new_mtx
+        )
+        
+        map_xy = undistorted_pts.reshape(H, W, 2) # (H, W, 2) in pixels
+        mapx = map_xy[:, :, 0]
+        mapy = map_xy[:, :, 1]
+        
+        # 4. Normalize to [-1, 1] for F.grid_sample
+        # grid_sample treats (-1, -1) as top-left corner
+        grid_x = 2.0 * mapx / (W - 1) - 1.0
+        grid_y = 2.0 * mapy / (H - 1) - 1.0
+        
+        # Stack to (H, W, 2)
+        grid = np.stack((grid_x, grid_y), axis=2).astype(np.float32)
+        
+        # Convert to Tensor on device
+        # grid_sample expects (N, H, W, 2)
+        # We will expand N aka Batch size dynamically or broadcast?
+        # F.grid_sample requires N to match or be broadcastable? 
+        # Usually N must match input. We'll expand later.
+        self.distortion_grid = torch.from_numpy(grid).to(device=self.device) # (H, W, 2)
+
+    def _apply_distortion_to_obs(self, obs):
+        """Apply distortion to RGB images in observation using GPU grid_sample."""
+        import torch.nn.functional as F
+        
+        if isinstance(obs, dict) and "image" in obs:
+            if "front_camera" in obs["image"]:
+                if "rgb" in obs["image"]["front_camera"]:
+                    rgb_tensor = obs["image"]["front_camera"]["rgb"] # Expecting Tensor
+                    
+                    if not isinstance(rgb_tensor, torch.Tensor):
+                        # Should not happen in GPU sim typically, but safe fallback logic or skip
+                        return obs
+
+                    # Input: (B, H, W, C) or (H, W, C) generally for ManiSkill sensors
+                    # grid_sample needs (B, C, H, W)
+                    
+                    is_batch = len(rgb_tensor.shape) == 4
+                    if not is_batch:
+                        # Add batch dim: (1, H, W, C)
+                        img_in = rgb_tensor.unsqueeze(0)
+                    else:
+                        img_in = rgb_tensor
+
+                    B, H, W, C = img_in.shape
+                    
+                    # Permute to (B, C, H, W)
+                    img_in = img_in.permute(0, 3, 1, 2).float() # (B, C, H, W)
+                    
+                    # Prepare grid: Expand (H, W, 2) to (B, H, W, 2)
+                    grid = self.distortion_grid.unsqueeze(0).expand(B, -1, -1, -1)
+                    
+                    # Sample
+                    # mode='bilinear': clean interpolation
+                    # padding_mode='border': replicates edge pixels (like REPLICATE in cv2)
+                    # align_corners=True: matches standard CV coordinates usually
+                    distorted = F.grid_sample(img_in, grid, mode='bilinear', padding_mode='border', align_corners=True)
+                    
+                    # Permute back to (B, H, W, C)
+                    distorted = distorted.permute(0, 2, 3, 1)
+                    
+                    # Convert type back if needed (usually float is fine, typical gym space is uint8 0-255)
+                    # ManiSkill usually keeps sensor data as float or uint8?
+                    if rgb_tensor.dtype == torch.uint8:
+                        distorted = distorted.to(torch.uint8)
+                    else:
+                        distorted = distorted.to(rgb_tensor.dtype)
+                        
+                    if not is_batch:
+                        obs["image"]["front_camera"]["rgb"] = distorted.squeeze(0)
+                    else:
+                        obs["image"]["front_camera"]["rgb"] = distorted
+
+        return obs
+
+    def reset(self, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        if self.sim_distorted_images:
+            obs = self._apply_distortion_to_obs(obs)
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        if self.sim_distorted_images:
+            obs = self._apply_distortion_to_obs(obs)
+        return obs, reward, terminated, truncated, info
+
+    def _get_obs_extra(self, info: dict):
+        """Return extra observations."""
+        return {
+            "red_cube_pos": self.red_cube.pose.p,
+            "green_cube_pos": self.green_cube.pose.p,
+        }
 
     @property
     def _default_sensor_configs(self):
