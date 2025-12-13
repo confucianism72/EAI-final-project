@@ -8,6 +8,7 @@ from mani_skill.agents.base_agent import BaseAgent, Keyframe
 from mani_skill.agents.controllers import *
 from mani_skill.agents.registration import register_agent
 from mani_skill.utils import common
+from mani_skill.sensors.camera import CameraConfig
 
 @register_agent()
 class SO101(BaseAgent):
@@ -46,6 +47,22 @@ class SO101(BaseAgent):
     gripper_joint_names = [
         "gripper",
     ]
+
+    @property
+    def _sensor_configs(self):
+        print("DEBUG: SO101._sensor_configs called")
+        return [
+            CameraConfig(
+                "wrist_camera",
+                pose=sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0]),
+                width=640,
+                height=480,
+                fov=np.deg2rad(50),
+                near=0.01,
+                far=100,
+                mount=self.robot.links_map["camera_link"]
+            )
+        ]
 
     @property
     def _controller_configs(self):
