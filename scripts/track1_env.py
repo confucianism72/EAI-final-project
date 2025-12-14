@@ -793,29 +793,32 @@ class Track1Env(BaseEnv):
         fallen_threshold = -0.05
         red_fallen = self.red_cube.pose.p[:, 2] < fallen_threshold
         
-        # If any object vital to the task falls, it's a fail (success=False)
-        # We can return 'fail': True in info if needed, but for now strict success check is key.
+        result = {}
         
         if self.task == "lift":
-            # Only red cube matters
-            if red_fallen.any():
-                return {"success": torch.zeros_like(red_fallen, dtype=torch.bool), "fail": red_fallen}
-            return self._evaluate_lift()
+            result = self._evaluate_lift()
+            # Mark fail if fallen
+            result["fail"] = red_fallen
+            # Ensure success is False if fallen
+            result["success"] = result["success"] & (~red_fallen)
             
         elif self.task == "stack":
             green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
-            if red_fallen.any() or green_fallen.any():
-                is_fallen = red_fallen | green_fallen
-                return {"success": torch.zeros_like(is_fallen, dtype=torch.bool), "fail": is_fallen}
-            return self._evaluate_stack()
+            is_fallen = red_fallen | green_fallen
+            
+            result = self._evaluate_stack()
+            result["fail"] = is_fallen
+            result["success"] = result["success"] & (~is_fallen)
             
         elif self.task == "sort":
             green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
-            if red_fallen.any() or green_fallen.any():
-                is_fallen = red_fallen | green_fallen
-                return {"success": torch.zeros_like(is_fallen, dtype=torch.bool), "fail": is_fallen}
-            return self._evaluate_sort()
-        return {}
+            is_fallen = red_fallen | green_fallen
+            
+            result = self._evaluate_sort()
+            result["fail"] = is_fallen
+            result["success"] = result["success"] & (~is_fallen)
+            
+        return result
 
     def _evaluate_lift(self):
         """Lift: red cube >= 5cm above table."""
