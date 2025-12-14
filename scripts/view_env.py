@@ -3,8 +3,9 @@
 
 Usage:
     python scripts/view_env.py --task lift
-    python scripts/view_env.py --task stack
-    python scripts/view_env.py --task sort
+    python scripts/view_env.py --task lift --camera-mode distorted
+    python scripts/view_env.py --task lift --camera-mode distort-twice
+    python scripts/view_env.py --task lift --camera-mode direct_pinhole
     python scripts/view_env.py --task lift --domain-randomization
 """
 
@@ -20,9 +21,12 @@ def main():
                         help="Task type to visualize")
     parser.add_argument("--domain-randomization", action="store_true",
                         help="Enable domain randomization")
+    parser.add_argument("--camera-mode", type=str, default="direct_pinhole",
+                        choices=["distorted", "distort-twice", "direct_pinhole"],
+                        help="Camera output mode: distorted (raw fisheye), distort-twice (rectified), direct_pinhole (efficient render)")
     args = parser.parse_args()
     
-    print(f"Starting Track1 environment with task={args.task}")
+    print(f"Starting Track1 environment with task={args.task}, camera_mode={args.camera_mode}")
     print("Controls:")
     print("  - Mouse: Rotate camera view")
     print("  - Scroll: Zoom in/out")
@@ -36,6 +40,7 @@ def main():
         reward_mode="none",  # Disable reward computation
         task=args.task,
         domain_randomization=args.domain_randomization,
+        camera_mode=args.camera_mode,
         num_envs=1,
     )
     

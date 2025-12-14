@@ -2,6 +2,7 @@ import numpy as np
 import sapien
 import sapien.render
 import torch
+import torch.nn.functional as tFunc
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.envs.utils import randomization
 from mani_skill.utils import sapien_utils, common
@@ -28,212 +29,258 @@ class Track1Env(BaseEnv):
         robot_uids=("so101", "so101"),
         task: str = "lift",  # "lift", "stack", "sort"
         domain_randomization: bool = True,
-        sim_distorted_images: bool = False,
+        camera_mode: str = "direct_pinhole",  # "distorted", "distort-twice", "direct_pinhole"
+        render_scale: int = 3,
         **kwargs
     ):
         self.task = task
         self.domain_randomization = domain_randomization
-        self.sim_distorted_images = sim_distorted_images
+
+        self.render_scale = render_scale
+        
+        # Validate camera_mode
+        valid_modes = ["distorted", "distort-twice", "direct_pinhole"]
+        if camera_mode not in valid_modes:
+            raise ValueError(f"camera_mode must be one of {valid_modes}, got '{camera_mode}'")
+        self.camera_mode = camera_mode
+        
         self.grid_bounds = {}  # Will be populated in _compute_grids
+
+        # Precompute camera processing maps if needed (after super init so device is ready)
+        self._setup_camera_processing_maps()
             
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
-        # Precompute distortion maps if needed (after super init so device is ready)
-        if self.sim_distorted_images:
-            self._setup_distortion_maps()
+        self._setup_device()
 
-    def _setup_distortion_maps(self):
-        """Precompute torch grid for simulating distortion via F.grid_sample."""
+    def _setup_device(self):
+        assert hasattr(self, 'device')
+        if hasattr(self, 'distortion_grid'):
+            self.distortion_grid = self.distortion_grid.to(self.device)
+        if hasattr(self, 'undistortion_grid'):
+            self.undistortion_grid = self.undistortion_grid.to(self.device)
+
+    def _setup_camera_processing_maps(self):
+        """Precompute torch grids for camera distortion/undistortion processing via tFunc.grid_sample.
+        
+        Pipeline:
+        - Source: Rendered at (640×scale) × (480×scale) with scaled intrinsic matrix
+        - Distortion: Maps source -> 640×480 distorted output
+        - Undistortion (alpha=0): Maps 640×480 distorted -> 640×480 clean pinhole
+        """
         import cv2
-        import torch
         
-        # Camera Parameters
-        W, H = 640, 480
-        
-        # Intrinsic Matrix (K)
+        # Camera intrinsic parameters (from real camera calibration)
         self.mtx_intrinsic = np.array([
             [570.21740069, 0., 327.45975405],
             [0., 570.1797441, 260.83642155],
             [0., 0., 1.]
         ], dtype=np.float64)
         
-        # Distortion Coefficients (D)
         self.dist_coeffs = np.array([
             -0.735413911, 0.949258417, 0.000189059234, -0.00200351391, -0.864150312
         ], dtype=np.float64)
         
-        # 1. Optimal New Camera Matrix (P) for rectification (alpha=1.0)
-        image_size = (W, H)
-        new_mtx, _ = cv2.getOptimalNewCameraMatrix(
-            self.mtx_intrinsic, self.dist_coeffs, image_size, 1.0, image_size
-        )
-        new_mtx[0, 2] = W / 2
-        new_mtx[1, 2] = H / 2
+        # Scale factor for high-res rendering
         
-        # 2. Grid generation for target distorted image
-        xs = np.arange(W)
-        ys = np.arange(H)
-        xx, yy = np.meshgrid(xs, ys)
-        
-        points = np.stack([xx.ravel(), yy.ravel()], axis=-1).astype(np.float32)
-        points = points.reshape(-1, 1, 2)
-        
-        # 3. undistortPoints to find source coordinates (in rectified image)
-        undistorted_pts = cv2.undistortPoints(
-            points, 
-            cameraMatrix=self.mtx_intrinsic, 
-            distCoeffs=self.dist_coeffs, 
-            R=None, 
-            P=new_mtx
-        )
-        
-        map_xy = undistorted_pts.reshape(H, W, 2) # (H, W, 2) in pixels
-        mapx = map_xy[:, :, 0]
-        mapy = map_xy[:, :, 1]
-        
-        # 4. Normalize to [-1, 1] for F.grid_sample
-        # grid_sample treats (-1, -1) as top-left corner
-        grid_x = 2.0 * mapx / (W - 1) - 1.0
-        grid_y = 2.0 * mapy / (H - 1) - 1.0
-        
-        # Stack to (H, W, 2)
-        grid = np.stack((grid_x, grid_y), axis=2).astype(np.float32)
-        
-        # Convert to Tensor on device
-        # grid_sample expects (N, H, W, 2)
-        # We will expand N aka Batch size dynamically or broadcast?
-        # F.grid_sample requires N to match or be broadcastable? 
-        # Usually N must match input. We'll expand later.
-        self.distortion_grid = torch.from_numpy(grid).to(device=self.device) # (H, W, 2)
+        # Source image size (high-res pinhole render)
+        OUT_W, OUT_H = 640, 480
+        SRC_W = OUT_W * self.render_scale
+        SRC_H = OUT_H * self.render_scale
+        if self.camera_mode in ["distorted", "distort-twice"]:
+            self.front_render_width = SRC_W
+            self.front_render_height = SRC_H
 
-    def _apply_distortion_to_obs(self, obs):
-        """Apply distortion to RGB images in observation using GPU grid_sample."""
-        import torch.nn.functional as F
+            # Get the undistorted intrinsic matrix using getOptimalNewCameraMatrix with alpha=1
+            # This gives us the intrinsic for a pinhole camera that covers all distorted pixels
+            new_mtx_alpha1, _ = cv2.getOptimalNewCameraMatrix(
+                self.mtx_intrinsic, self.dist_coeffs, (OUT_W, OUT_H), 1.0, (SRC_W, SRC_H)
+            )
+            
+            # Scale the new_mtx to render resolution
+            self.render_intrinsic = new_mtx_alpha1.copy()
+            
+            # ============ Distortion Grid (SRC -> OUT distorted) ============
+            # For each pixel in the 640×480 distorted output, find where it maps to in the source
+            
+            # Step 1: Generate grid for distorted output image (640×480)
+            xs = np.arange(OUT_W)
+            ys = np.arange(OUT_H)
+            xx, yy = np.meshgrid(xs, ys)
+            points = np.stack([xx.ravel(), yy.ravel()], axis=-1).astype(np.float32).reshape(-1, 1, 2)
+            
+            # Step 2: undistortPoints with P=scaled_intrinsic gives coordinates in render space directly
+            undistorted_pts = cv2.undistortPoints(
+                points, 
+                cameraMatrix=self.mtx_intrinsic, 
+                distCoeffs=self.dist_coeffs, 
+                R=None, 
+                P=self.render_intrinsic  # Project to render camera space
+            )
+            map_xy_render = undistorted_pts.reshape(OUT_H, OUT_W, 2)
+            
+            # Step 3: Normalize to [-1, 1] for grid_sample
+            grid_x = 2.0 * map_xy_render[:, :, 0] / (SRC_W - 1) - 1.0
+            grid_y = 2.0 * map_xy_render[:, :, 1] / (SRC_H - 1) - 1.0
+            distortion_grid = np.stack((grid_x, grid_y), axis=2).astype(np.float32)
+            self.distortion_grid = torch.from_numpy(distortion_grid)# .to(device=self.device)  # (OUT_H, OUT_W, 2)
+            
+            # ============ Undistortion Grid (alpha=0) ============
+            # This maps 640x480 distorted -> 640x480 clean (cropped) pinhole
+        if self.camera_mode in ["distort-twice", "direct_pinhole"]:
+            # Get alpha=0 new_mtx 
+            new_mtx_alpha0, _ = cv2.getOptimalNewCameraMatrix(
+                self.mtx_intrinsic, self.dist_coeffs, (OUT_W, OUT_H), 0.0, (OUT_W, OUT_H)
+            )
+            
+            if self.camera_mode == "direct_pinhole":
+                self.front_render_width = OUT_W
+                self.front_render_height = OUT_H
+                self.render_intrinsic = new_mtx_alpha0.copy()
+                return
+            # initUndistortRectifyMap gives us the mapping from undistorted -> distorted source
+            # We need the inverse for grid_sample
+            map1, map2 = cv2.initUndistortRectifyMap(
+                self.mtx_intrinsic, self.dist_coeffs, None, new_mtx_alpha0, (OUT_W, OUT_H), cv2.CV_32FC1
+            )
+            
+            # map1, map2 are (OUT_H, OUT_W) containing x, y source coordinates
+            # Normalize to [-1, 1]
+            undist_grid_x = 2.0 * map1 / (OUT_W - 1) - 1.0
+            undist_grid_y = 2.0 * map2 / (OUT_H - 1) - 1.0
+            undistortion_grid = np.stack((undist_grid_x, undist_grid_y), axis=2).astype(np.float32)
+            self.undistortion_grid = torch.from_numpy(undistortion_grid).to(device=self.device)  # (OUT_H, OUT_W, 2)
+
+    def _apply_camera_processing(self, obs):
+        """Apply camera processing based on camera_mode.
         
-        if isinstance(obs, dict) and "image" in obs:
-            if "front_camera" in obs["image"]:
+        Modes:
+        - direct_pinhole: No processing (already rendered with correct params)
+        - distorted: Apply distortion to 1920x1440 source -> 640x480 distorted output
+        - distort-twice: distorted -> then undistort (alpha=0) -> 640x480 clean
+        """
+        
+        if self.camera_mode == "direct_pinhole":
+            return obs  # No processing needed
+        
+        # Skip if grids not yet initialized (happens during parent __init__ reset)
+        if not hasattr(self, 'distortion_grid'):
+            return obs
+        
+        # Find the RGB tensor - could be in 'sensor_data' or 'image'
+        rgb_tensor = None
+        obs_key = None
+        
+        if isinstance(obs, dict):
+            if "sensor_data" in obs and "front_camera" in obs["sensor_data"]:
+                if "rgb" in obs["sensor_data"]["front_camera"]:
+                    rgb_tensor = obs["sensor_data"]["front_camera"]["rgb"]
+                    obs_key = "sensor_data"
+            elif "image" in obs and "front_camera" in obs["image"]:
                 if "rgb" in obs["image"]["front_camera"]:
-                    rgb_tensor = obs["image"]["front_camera"]["rgb"] # Expecting Tensor
-                    
-                    if not isinstance(rgb_tensor, torch.Tensor):
-                        # Should not happen in GPU sim typically, but safe fallback logic or skip
-                        return obs
+                    rgb_tensor = obs["image"]["front_camera"]["rgb"]
+                    obs_key = "image"
+        
+        if rgb_tensor is None or not isinstance(rgb_tensor, torch.Tensor):
+            return obs
 
-                    # Input: (B, H, W, C) or (H, W, C) generally for ManiSkill sensors
-                    # grid_sample needs (B, C, H, W)
-                    
-                    is_batch = len(rgb_tensor.shape) == 4
-                    if not is_batch:
-                        # Add batch dim: (1, H, W, C)
-                        img_in = rgb_tensor.unsqueeze(0)
-                    else:
-                        img_in = rgb_tensor
+        # Input: (B, SRC_H, SRC_W, C) or (SRC_H, SRC_W, C)
+        # For distorted/distort-twice: Source is 1920x1440
+        is_batch = len(rgb_tensor.shape) == 4
+        if not is_batch:
+            img_in = rgb_tensor.unsqueeze(0)
+        else:
+            img_in = rgb_tensor
 
-                    B, H, W, C = img_in.shape
-                    
-                    # Permute to (B, C, H, W)
-                    img_in = img_in.permute(0, 3, 1, 2).float() # (B, C, H, W)
-                    
-                    # Prepare grid: Expand (H, W, 2) to (B, H, W, 2)
-                    grid = self.distortion_grid.unsqueeze(0).expand(B, -1, -1, -1)
-                    
-                    # Sample
-                    # mode='bilinear': clean interpolation
-                    # padding_mode='border': replicates edge pixels (like REPLICATE in cv2)
-                    # align_corners=True: matches standard CV coordinates usually
-                    distorted = F.grid_sample(img_in, grid, mode='bilinear', padding_mode='border', align_corners=True)
-                    
-                    # Permute back to (B, H, W, C)
-                    distorted = distorted.permute(0, 2, 3, 1)
-                    
-                    # Convert type back if needed (usually float is fine, typical gym space is uint8 0-255)
-                    # ManiSkill usually keeps sensor data as float or uint8?
-                    if rgb_tensor.dtype == torch.uint8:
-                        distorted = distorted.to(torch.uint8)
-                    else:
-                        distorted = distorted.to(rgb_tensor.dtype)
-                        
-                    if not is_batch:
-                        obs["image"]["front_camera"]["rgb"] = distorted.squeeze(0)
-                    else:
-                        obs["image"]["front_camera"]["rgb"] = distorted
+        B = img_in.shape[0]
+        original_dtype = rgb_tensor.dtype
+        
+        # Permute to (B, C, H, W) for grid_sample
+        img_in = img_in.permute(0, 3, 1, 2).float()
+        
+        # Ensure grids are on same device as input
+        device = img_in.device
+        dist_grid = self.distortion_grid.to(device).unsqueeze(0).expand(B, -1, -1, -1)
+        
+        # Step 1: Apply distortion (1920x1440 -> 640x480)
+        distorted = tFunc.grid_sample(img_in, dist_grid, mode='bilinear', padding_mode='border', align_corners=True)
+        
+        if self.camera_mode == "distorted":
+            result = distorted
+        elif self.camera_mode == "distort-twice":
+            # Step 2: Apply undistortion (640x480 distorted -> 640x480 clean)
+            undist_grid = self.undistortion_grid.to(device).unsqueeze(0).expand(B, -1, -1, -1)
+            result = tFunc.grid_sample(distorted, undist_grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+        else:
+            result = distorted  # Fallback
+        
+        # Permute back to (B, H, W, C)
+        result = result.permute(0, 2, 3, 1)
+        
+        # Restore dtype
+        if original_dtype == torch.uint8:
+            result = result.clamp(0, 255).to(torch.uint8)
+        else:
+            result = result.to(original_dtype)
+            
+        if not is_batch:
+            obs[obs_key]["front_camera"]["rgb"] = result.squeeze(0)
+        else:
+            obs[obs_key]["front_camera"]["rgb"] = result
 
         return obs
-
-    def reset(self, seed=None, options=None):
-        obs, info = super().reset(seed=seed, options=options)
-        if self.sim_distorted_images:
-            obs = self._apply_distortion_to_obs(obs)
-        return obs, info
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = super().step(action)
-        if self.sim_distorted_images:
-            obs = self._apply_distortion_to_obs(obs)
-        return obs, reward, terminated, truncated, info
-
-    def _get_obs_extra(self, info: dict):
-        """Return extra observations."""
-        return {
-            "red_cube_pos": self.red_cube.pose.p,
-            "green_cube_pos": self.green_cube.pose.p,
-        }
 
     @property
     def _default_sensor_configs(self):
         """Front Camera with optional config file override for manual tuning."""
-        import os
-        import json
-        from scipy.spatial.transform import Rotation
         
-        # Default parameters
-        base_pos = [0.316, 0.260, 0.407]
-        pitch, yaw, roll = -90, 0, 0  # degrees
-        fov_deg = 73.63
         
-        # Check for camera config file (for manual tuning)
-        config_path = os.environ.get('CAMERA_CONFIG_PATH', '')
-        if config_path and os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                base_pos = config.get('position', base_pos)
-                pitch = config.get('pitch', pitch)
-                yaw = config.get('yaw', yaw)
-                roll = config.get('roll', roll)
-                fov_deg = config.get('fov', fov_deg)
-                print(f"[Track1Env] Loaded camera config from {config_path}")
-            except Exception as e:
-                print(f"[Track1Env] Warning: Failed to load camera config: {e}")
-        
-        # Convert Euler angles to quaternion
-        rot = Rotation.from_euler('xyz', [pitch, yaw, roll], degrees=True)
-        q_scipy = rot.as_quat()  # [x, y, z, w]
-        q_sapien = [q_scipy[3], q_scipy[0], q_scipy[1], q_scipy[2]]  # [w, x, y, z]
+        pose = sapien_utils.look_at(eye=[0.316, 0.260, 0.407], target=[0.316, 0.260, 0.0], up=[0, -1, 0])
         
         if self.domain_randomization and hasattr(self, 'num_envs') and self.num_envs > 1:
-            base_pose = sapien.Pose(p=base_pos, q=q_sapien)
-            pose = Pose.create(base_pose)
+            # base_pose = sapien.Pose(p=base_pos, q=q_sapien)
+            # pose = Pose.create(base_pose)
+            
+            # Note: look_at returns a sapien.Pose (cpu). We need to convert if using batch logic?
+            # look_at supports batch if inputs are tensors. Here inputs are lists.
+            # So 'pose' is a single sapien.Pose.
+            
+            # Convert to Maniskill Pose to apply randomization
+            pose = Pose.create(pose)
+            
             pose = pose * Pose.create_from_pq(
                 p=torch.rand((self.num_envs, 3)) * 0.05 - 0.025,
                 q=randomization.random_quaternions(
                     n=self.num_envs, device=self.device, bounds=(-np.pi / 24, np.pi / 24)
                 ),
             )
-        else:
-            pose = sapien.Pose(p=base_pos, q=q_sapien)
         
-        return [
-            CameraConfig(
-                "front_camera",
-                pose=pose,
-                width=640,
-                height=480,
-                fov=np.deg2rad(fov_deg),
-                near=0.01,
-                far=100,
-            ),
-        ]
+        # Determine resolution and intrinsic based on camera_mode
+        if self.camera_mode == "direct_pinhole":
+            return [
+                CameraConfig(
+                    "front_camera",
+                    pose=pose,
+                    width=self.front_render_width,
+                    height=self.front_render_height,
+                    intrinsic=self.render_intrinsic,
+                    near=0.01,
+                    far=100,
+                ),
+            ]
+        else:
+            # High-res source for distortion pipeline using scaled intrinsic
+            return [
+                CameraConfig(
+                    "front_camera",
+                    pose=pose,
+                    width=self.front_render_width,
+                    height=self.front_render_height,
+                    intrinsic=self.render_intrinsic,
+                    near=0.01,
+                    far=100,
+                ),
+            ]
 
     def _setup_sensors(self, options: dict):
         """Override to add wrist cameras after agents are loaded."""
@@ -257,6 +304,26 @@ class Track1Env(BaseEnv):
                     mount=camera_link,
                 )
                 self._sensors[uid] = Camera(config, self.scene)
+
+    def reset(self, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        if self.camera_mode != "direct_pinhole":
+            obs = self._apply_camera_processing(obs)
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        if self.camera_mode != "direct_pinhole":
+            obs = self._apply_camera_processing(obs)
+        return obs, reward, terminated, truncated, info
+
+    def _get_obs_extra(self, info: dict):
+        """Return extra observations."""
+        return {
+            "red_cube_pos": self.red_cube.pose.p,
+            "green_cube_pos": self.green_cube.pose.p,
+        }
+
 
     def _load_lighting(self, options: dict):
         """Load lighting with optional randomization."""
@@ -796,9 +863,3 @@ class Track1Env(BaseEnv):
         success = red_in_right & green_in_left
         return {"success": success, "red_in_right": red_in_right, "green_in_left": green_in_left}
 
-    def _get_obs_extra(self, info: dict):
-        """Return extra observations."""
-        return {
-            "red_cube_pos": self.red_cube.pose.p,
-            "green_cube_pos": self.green_cube.pose.p,
-        }
