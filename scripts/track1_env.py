@@ -805,9 +805,12 @@ class Track1Env(BaseEnv):
                     shape.physical_material.static_friction = np.random.uniform(0.2, 0.5)
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
-        """Initialize episode with randomized object positions based on task."""
+        """Initialize episode with randomized object positions and robot poses."""
         with torch.device(self.device):
             b = len(env_idx)
+            
+            # Initialize robot poses with noise around zero
+            self._initialize_robot_poses(b, env_idx)
             
             if self.task == "lift":
                 # Red cube random in Right Grid (no green cube in lift task)
@@ -837,6 +840,32 @@ class Track1Env(BaseEnv):
                 green_pos = self._random_grid_position(b, self.grid_bounds["mid"], z=0.005)  # Smaller green cube
                 self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
                 self.green_cube.set_pose(Pose.create_from_pq(p=green_pos))
+
+    def _initialize_robot_poses(self, batch_size: int, env_idx: torch.Tensor):
+        """Initialize robot poses with zero + small noise.
+        
+        Uses zero qpos as base and adds small Gaussian noise to introduce
+        variation in initial configurations while keeping the pose valid.
+        """
+        # Noise standard deviation per joint (radians)
+        # Smaller noise for arm joints (0-4), larger for gripper (5)
+        qpos_noise_std = torch.tensor([0.1, 0.1, 0.1, 0.1, 0.1, 0.2], device=self.device)
+        
+        for agent in self.agent.agents:
+            # Zero base pose
+            zero_qpos = torch.zeros((batch_size, 6), device=self.device)
+            
+            # Add Gaussian noise
+            noise = torch.randn_like(zero_qpos) * qpos_noise_std
+            qpos = zero_qpos + noise
+            
+            # Clamp to safe joint limits (approximate, from URDF)
+            # More conservative than actual limits to ensure valid poses
+            qpos_lower = torch.tensor([-0.1, -2.0, -1.5, -1.5, -1.5, -1.0], device=self.device)
+            qpos_upper = torch.tensor([1.5, 2.0, 1.5, 1.5, 1.5, 0.5], device=self.device)
+            qpos = torch.clamp(qpos, qpos_lower, qpos_upper)
+            
+            agent.robot.set_qpos(qpos)
 
     def _random_grid_position(self, batch_size: int, grid: dict, z: float) -> torch.Tensor:
         """Generate random positions within a grid."""
