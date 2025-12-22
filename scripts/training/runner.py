@@ -139,7 +139,7 @@ class PPORunner:
                 # When not using CudaGraphModule, reduce-overhead is safe
                 self.policy = torch.compile(self.policy, mode="reduce-overhead")
             # get_value: compile for consistency (called once per iteration)
-            self.get_value = torch.compile(self.get_value)
+            self.get_value = torch.compile(self.get_value, mode="reduce-overhead")
             # Update: Always use reduce-overhead (no CudaGraphModule on update)
             self.update_fn = torch.compile(self.update_fn, mode="reduce-overhead")
         
