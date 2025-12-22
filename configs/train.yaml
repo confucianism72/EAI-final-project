@@ -36,6 +36,8 @@ ppo:
   num_minibatches: 32
   update_epochs: 4
   clip_coef: 0.2
+  clip_vloss: true      # Whether to clip value loss (as per original PPO paper)
+  norm_adv: true        # Whether to normalize advantages per minibatch
   ent_coef: 0.0
   vf_coef: 0.5
   max_grad_norm: 0.5

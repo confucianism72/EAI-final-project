@@ -52,7 +52,7 @@ def make_ppo_update_fn(agent, optimizer, cfg):
     Args:
         agent: The training agent (with get_action_and_value method)
         optimizer: The optimizer for agent parameters
-        cfg: Config with ppo.clip_coef, ppo.ent_coef, ppo.vf_coef, ppo.max_grad_norm
+        cfg: Config with ppo.clip_coef, ppo.clip_vloss, ppo.norm_adv, ppo.ent_coef, ppo.vf_coef, ppo.max_grad_norm
     
     Returns:
         TensorDictModule wrapping the update function
@@ -60,6 +60,8 @@ def make_ppo_update_fn(agent, optimizer, cfg):
     import tensordict
     
     clip_coef = cfg.ppo.clip_coef
+    clip_vloss = cfg.ppo.get("clip_vloss", True)  # Default True (CleanRL default)
+    norm_adv = cfg.ppo.get("norm_adv", True)      # Default True (CleanRL default)
     ent_coef = cfg.ppo.ent_coef
     vf_coef = cfg.ppo.vf_coef
     max_grad_norm = cfg.ppo.max_grad_norm
@@ -75,20 +77,24 @@ def make_ppo_update_fn(agent, optimizer, cfg):
             approx_kl = ((ratio - 1) - logratio).mean()
             clipfrac = ((ratio - 1.0).abs() > clip_coef).float().mean()
         
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Normalize advantages (configurable, CleanRL default: True)
+        if norm_adv:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
         # Policy loss
         pg_loss1 = -advantages * ratio
         pg_loss2 = -advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
         pg_loss = torch.max(pg_loss1, pg_loss2).mean()
         
-        # Value loss (clipped)
+        # Value loss (configurable clipping, CleanRL default: True)
         newvalue = newvalue.view(-1)
-        v_loss_unclipped = (newvalue - returns) ** 2
-        v_clipped = vals + torch.clamp(newvalue - vals, -clip_coef, clip_coef)
-        v_loss_clipped = (v_clipped - returns) ** 2
-        v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+        if clip_vloss:
+            v_loss_unclipped = (newvalue - returns) ** 2
+            v_clipped = vals + torch.clamp(newvalue - vals, -clip_coef, clip_coef)
+            v_loss_clipped = (v_clipped - returns) ** 2
+            v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+        else:
+            v_loss = 0.5 * ((newvalue - returns) ** 2).mean()
         
         entropy_loss = entropy.mean()
         loss = pg_loss - ent_coef * entropy_loss + v_loss * vf_coef
