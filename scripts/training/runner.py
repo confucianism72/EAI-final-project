@@ -27,7 +27,7 @@ from tensordict.nn import CudaGraphModule
 
 from scripts.training.agent import Agent
 from scripts.training.common import make_env
-from scripts.training.ppo_utils import optimized_gae
+from scripts.training.ppo_utils import optimized_gae, make_ppo_update_fn
 
 class PPORunner:
     def __init__(self, cfg):
@@ -126,48 +126,8 @@ class PPORunner:
             gae_lambda=cfg.ppo.gae_lambda
         )
 
-        # 3. Update (Training): Use torch.compile(mode="reduce-overhead")
-        # DO NOT use CudaGraphModule here to avoid losing CPU-side logic.
-        def update(obs, actions, logprobs, advantages, returns, vals):
-            self.optimizer.zero_grad(set_to_none=True)
-            _, newlogprob, entropy, newvalue = self.agent.get_action_and_value(obs, actions)
-            logratio = newlogprob - logprobs
-            ratio = logratio.exp()
-            
-            with torch.no_grad():
-                old_approx_kl = (-logratio).mean()
-                approx_kl = ((ratio - 1) - logratio).mean()
-                clipfrac = ((ratio - 1.0).abs() > cfg.ppo.clip_coef).float().mean()
-            
-            # Normalize advantages
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            
-            # Policy loss
-            pg_loss1 = -advantages * ratio
-            pg_loss2 = -advantages * torch.clamp(ratio, 1 - cfg.ppo.clip_coef, 1 + cfg.ppo.clip_coef)
-            pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-            
-            # Value loss (clipped)
-            newvalue = newvalue.view(-1)
-            v_loss_unclipped = (newvalue - returns) ** 2
-            v_clipped = vals + torch.clamp(newvalue - vals, -cfg.ppo.clip_coef, cfg.ppo.clip_coef)
-            v_loss_clipped = (v_clipped - returns) ** 2
-            v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
-            
-            entropy_loss = entropy.mean()
-            loss = pg_loss - cfg.ppo.ent_coef * entropy_loss + v_loss * cfg.ppo.vf_coef
-            
-            loss.backward()
-            gn = nn.utils.clip_grad_norm_(self.agent.parameters(), cfg.ppo.max_grad_norm)
-            self.optimizer.step()
-            
-            return approx_kl, v_loss, pg_loss, entropy_loss, old_approx_kl, clipfrac, gn
-        
-        self.update_fn = tensordict.nn.TensorDictModule(
-            update,
-            in_keys=["obs", "actions", "logprobs", "advantages", "returns", "vals"],
-            out_keys=["approx_kl", "v_loss", "pg_loss", "entropy_loss", "old_approx_kl", "clipfrac", "gn"],
-        )
+        # 3. Update: Use factory function from ppo_utils
+        self.update_fn = make_ppo_update_fn(self.agent, self.optimizer, cfg)
         
         if self.compile:
             print("Compiling functions...")
@@ -178,6 +138,8 @@ class PPORunner:
             else:
                 # When not using CudaGraphModule, reduce-overhead is safe
                 self.policy = torch.compile(self.policy, mode="reduce-overhead")
+            # get_value: compile for consistency (called once per iteration)
+            self.get_value = torch.compile(self.get_value)
             # Update: Always use reduce-overhead (no CudaGraphModule on update)
             self.update_fn = torch.compile(self.update_fn, mode="reduce-overhead")
         
