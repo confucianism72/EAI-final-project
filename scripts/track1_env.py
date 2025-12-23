@@ -35,11 +35,13 @@ class Track1Env(BaseEnv):
         reward_config: dict = None,  # Reward configuration from Hydra
         action_bounds: dict = None,  # Per-joint action bounds override
         camera_extrinsic: list = None,  # Camera extrinsic matrix (4x4 cam2world)
+        undistort_alpha: float = 0.25,  # Undistortion alpha for pinhole modes
         **kwargs
     ):
         self.task = task
         self.domain_randomization = domain_randomization
         self.camera_extrinsic = camera_extrinsic  # Store for use in _default_sensor_configs
+        self.undistort_alpha = undistort_alpha  # For pinhole output modes
 
         self.render_scale = render_scale
         
@@ -201,23 +203,26 @@ class Track1Env(BaseEnv):
             distortion_grid = np.stack((grid_x, grid_y), axis=2).astype(np.float32)
             self.distortion_grid = torch.from_numpy(distortion_grid)# .to(device=self.device)  # (OUT_H, OUT_W, 2)
             
-            # ============ Undistortion Grid (alpha=0) ============
-            # This maps 640x480 distorted -> 640x480 clean (cropped) pinhole
+            # ============ Undistortion Grid ============
+            # This maps 640x480 distorted -> 640x480 clean pinhole
         if self.camera_mode in ["distort-twice", "direct_pinhole"]:
-            # Get alpha=0 new_mtx 
-            new_mtx_alpha0, _ = cv2.getOptimalNewCameraMatrix(
-                self.mtx_intrinsic, self.dist_coeffs, (OUT_W, OUT_H), 0.0, (OUT_W, OUT_H)
+            # Get new camera matrix with configurable alpha
+            # alpha=0: crop black borders, alpha=1: keep all pixels (shrinks image)
+            # alpha=0.25 is optimal for full work area visibility
+            alpha = getattr(self, 'undistort_alpha', 0.25)
+            new_mtx_undist, _ = cv2.getOptimalNewCameraMatrix(
+                self.mtx_intrinsic, self.dist_coeffs, (OUT_W, OUT_H), alpha, (OUT_W, OUT_H)
             )
             
             if self.camera_mode == "direct_pinhole":
                 self.front_render_width = OUT_W
                 self.front_render_height = OUT_H
-                self.render_intrinsic = new_mtx_alpha0.copy()
+                self.render_intrinsic = new_mtx_undist.copy()
                 return
             # initUndistortRectifyMap gives us the mapping from undistorted -> distorted source
             # We need the inverse for grid_sample
             map1, map2 = cv2.initUndistortRectifyMap(
-                self.mtx_intrinsic, self.dist_coeffs, None, new_mtx_alpha0, (OUT_W, OUT_H), cv2.CV_32FC1
+                self.mtx_intrinsic, self.dist_coeffs, None, new_mtx_undist, (OUT_W, OUT_H), cv2.CV_32FC1
             )
             
             # map1, map2 are (OUT_H, OUT_W) containing x, y source coordinates

@@ -8,6 +8,7 @@ converted_docs/
 *.jpg
 *.jpeg
 *.npy
+*.mp4
 .vscode/
 .idea/
 eai-dataset/
@@ -21,3 +22,5 @@ outputs/
 LeanRL/
 wandb/
 cleanrl/
+undistort_comparison/
+wrist_calibration_data/

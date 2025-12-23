@@ -32,3 +32,9 @@ camera:
   # eye: [0.316, 0.260, 0.407]
   # target: [0.316, 0.260, 0.0]
   # up: [0, -1, 0]
+  
+  # Undistortion alpha for pinhole output modes (direct_pinhole, distort-twice)
+  # 0.0 = crop all black borders (lose edge pixels)
+  # 1.0 = keep all source pixels (has black borders, image shrinks)
+  # 0.25 = optimal for full work area visibility
+  undistort_alpha: 0.25

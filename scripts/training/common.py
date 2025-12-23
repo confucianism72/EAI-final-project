@@ -173,6 +173,15 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         "control_freq": control_freq,
     }
     
+    # Get camera config options
+    camera_extrinsic = None
+    undistort_alpha = 0.25  # Default
+    if "camera" in cfg.env:
+        if "extrinsic" in cfg.env.camera:
+            camera_extrinsic = OmegaConf.to_container(cfg.env.camera.extrinsic, resolve=True)
+        if "undistort_alpha" in cfg.env.camera:
+            undistort_alpha = cfg.env.camera.undistort_alpha
+    
     env_kwargs = dict(
         task=cfg.env.task,
         control_mode=cfg.env.control_mode,
@@ -181,6 +190,8 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
         reward_config=reward_config,
         action_bounds=action_bounds,
+        camera_extrinsic=camera_extrinsic,
+        undistort_alpha=undistort_alpha,
         sim_config=sim_config,
         render_mode="all",
         sim_backend="physx_cuda",
