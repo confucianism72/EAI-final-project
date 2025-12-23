@@ -16,6 +16,30 @@ class SO101(BaseAgent):
     # Use absolute path to the asset provided in the workspace
     urdf_path = "/home/admin/Desktop/eai-final-project/eai-2025-fall-final-project-reference-scripts/assets/SO101/so101.urdf"
     
+    # Per-joint action bounds (radians) - can be overridden before environment creation
+    # Default values based on trajectory analysis (99th percentile + buffer)
+    # Keys must match joint names: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
+    action_bounds_single_arm = {
+        "shoulder_pan": 0.044,    # ~2.5 degrees
+        "shoulder_lift": 0.087,   # ~5.0 degrees
+        "elbow_flex": 0.070,      # ~4.0 degrees
+        "wrist_flex": 0.044,      # ~2.5 degrees
+        "wrist_roll": 0.026,      # ~1.5 degrees
+        "gripper": 0.070,         # ~4.0 degrees
+    }
+    
+    action_bounds_dual_arm = {
+        "shoulder_pan": 0.070,    # ~4.0 degrees
+        "shoulder_lift": 0.122,   # ~7.0 degrees
+        "elbow_flex": 0.122,      # ~7.0 degrees
+        "wrist_flex": 0.070,      # ~4.0 degrees
+        "wrist_roll": 0.044,      # ~2.5 degrees
+        "gripper": 0.113,         # ~6.5 degrees
+    }
+    
+    # Active mode: 'single' or 'dual' - set by environment before agent creation
+    active_mode = "single"
+    
     urdf_config = dict(
         _materials=dict(
             gripper=dict(static_friction=2, dynamic_friction=2, restitution=0.0)
@@ -47,6 +71,13 @@ class SO101(BaseAgent):
     gripper_joint_names = [
         "gripper",
     ]
+    
+    @property
+    def _active_action_bounds(self):
+        """Get active action bounds based on mode."""
+        if self.active_mode == "dual":
+            return self.action_bounds_dual_arm
+        return self.action_bounds_single_arm
 
     @property
     def _sensor_configs(self):
@@ -71,6 +102,12 @@ class SO101(BaseAgent):
         arm_joint_names = all_joint_names[:5]  # First 5 joints are arm
         gripper_joint_names = all_joint_names[5:]  # Last joint is gripper
         
+        # Get per-joint action bounds based on active mode
+        bounds = self._active_action_bounds
+        joint_order = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        lower = [-bounds[j] for j in joint_order]
+        upper = [bounds[j] for j in joint_order]
+        
         # Absolute position control (no normalization)
         pd_joint_pos = PDJointPosControllerConfig(
             all_joint_names,
@@ -82,11 +119,11 @@ class SO101(BaseAgent):
             normalize_action=False,
         )
 
-        # Delta position control from CURRENT position
+        # Delta position control from CURRENT position (using configurable bounds)
         pd_joint_delta_pos = PDJointPosControllerConfig(
             all_joint_names,
-            [-0.05, -0.05, -0.05, -0.05, -0.05, -0.2],
-            [0.05, 0.05, 0.05, 0.05, 0.05, 0.2],
+            lower,
+            upper,
             stiffness=[1e3] * 6,
             damping=[1e2] * 6,
             force_limit=100,

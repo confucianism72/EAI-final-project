@@ -1,0 +1,14 @@
+# Dual-arm Control Configuration (Sort task)
+# Action bounds based on trajectory analysis (radians)
+control_mode: pd_joint_target_delta_pos
+normalize_action: true
+
+# Per-joint action bounds for dual-arm tasks
+# Sort task has larger movement requirements
+action_bounds:
+  shoulder_pan: 0.070    # ~4.0 degrees
+  shoulder_lift: 0.122   # ~7.0 degrees
+  elbow_flex: 0.122      # ~7.0 degrees
+  wrist_flex: 0.070      # ~4.0 degrees
+  wrist_roll: 0.044      # ~2.5 degrees
+  gripper: 0.113         # ~6.5 degrees

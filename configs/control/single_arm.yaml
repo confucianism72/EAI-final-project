@@ -1,0 +1,14 @@
+# Single-arm Control Configuration (Lift, Stack tasks)
+# Action bounds based on trajectory analysis (radians)
+control_mode: pd_joint_target_delta_pos
+normalize_action: true
+
+# Per-joint action bounds (converted from degrees: deg * π/180)
+# Based on 99th percentile + ~10% buffer from trajectory analysis
+action_bounds:
+  shoulder_pan: 0.044    # ~2.5 degrees
+  shoulder_lift: 0.087   # ~5.0 degrees
+  elbow_flex: 0.070      # ~4.0 degrees
+  wrist_flex: 0.044      # ~2.5 degrees
+  wrist_roll: 0.026      # ~1.5 degrees
+  gripper: 0.070         # ~4.0 degrees

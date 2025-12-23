@@ -158,6 +158,11 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     """Create Track1 environment with proper wrappers."""
     reward_config = OmegaConf.to_container(cfg.reward, resolve=True) if "reward" in cfg else None
     
+    # Get action_bounds from control config if available
+    action_bounds = None
+    if "control" in cfg and "action_bounds" in cfg.control:
+        action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True)
+    
     env_kwargs = dict(
         task=cfg.env.task,
         control_mode=cfg.env.control_mode,
@@ -165,6 +170,7 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         obs_mode=cfg.env.obs_mode,
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
         reward_config=reward_config,
+        action_bounds=action_bounds,
         render_mode="all",
         sim_backend="physx_cuda",
     )

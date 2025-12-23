@@ -3,6 +3,7 @@ defaults:
   - _self_
   - env: track1
   - reward: lift
+  - control: single_arm  # Use dual_arm for sort task
 
 # Experiment settings
 exp_name: null

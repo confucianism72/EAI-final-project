@@ -33,12 +33,27 @@ class Track1Env(BaseEnv):
         control_mode: str = "pd_joint_target_delta_pos",  # control mode from Hydra config
         render_scale: int = 3,
         reward_config: dict = None,  # Reward configuration from Hydra
+        action_bounds: dict = None,  # Per-joint action bounds override
         **kwargs
     ):
         self.task = task
         self.domain_randomization = domain_randomization
 
         self.render_scale = render_scale
+        
+        # Set SO101 action mode based on task BEFORE agent creation
+        # This affects the action bounds used in the controller configs
+        if task == "sort":
+            SO101.active_mode = "dual"
+        else:
+            SO101.active_mode = "single"
+        
+        # Override action bounds if provided from config
+        if action_bounds is not None:
+            if task == "sort":
+                SO101.action_bounds_dual_arm = action_bounds
+            else:
+                SO101.action_bounds_single_arm = action_bounds
         
         # Setup reward configuration (default values if not provided)
         self._setup_reward_config(reward_config)
