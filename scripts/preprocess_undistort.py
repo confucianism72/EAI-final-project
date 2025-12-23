@@ -3,6 +3,8 @@
 Preprocess eai-dataset to undistort front camera images.
 Creates a new dataset with undistorted images for LeRobot training.
 
+Optimized version: Uses ffmpeg pipes to avoid disk I/O for intermediate frames.
+
 Usage:
     python scripts/preprocess_undistort.py --task lift --alpha 0.25
     python scripts/preprocess_undistort.py --task stack --alpha 0.25
@@ -14,6 +16,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import cv2
 
@@ -25,21 +28,13 @@ MTX = np.array([
 ], dtype=np.float64)
 DIST = np.array([-0.735, 0.949, 0.000189, -0.00200, -0.864], dtype=np.float64)
 
-def undistort_video(input_path: Path, output_path: Path, alpha: float, verbose: bool = True):
-    """Undistort a video file using ffmpeg.
-    
-    Since ffmpeg's lensfun filter requires a camera database entry, we use a two-step process:
-    1. Decode AV1 to raw frames with ffmpeg
-    2. Apply undistortion with opencv
-    3. Encode back to mp4
-    """
-    import tempfile
-    import os
-    
+
+def undistort_video_pipe(input_path: Path, output_path: Path, alpha: float, verbose: bool = True):
+    """Undistort a video using ffmpeg pipes (no disk I/O for intermediate frames)."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Get video info
-    probe_cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "{input_path}"'
+    probe_cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,nb_frames -of csv=p=0 "{input_path}"'
     result = subprocess.run(probe_cmd, shell=True, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"  Error probing {input_path}")
@@ -54,35 +49,64 @@ def undistort_video(input_path: Path, output_path: Path, alpha: float, verbose: 
     else:
         fps = int(float(fps_str))
     
-    # Compute undistortion maps
+    # Compute undistortion maps once
     new_mtx, _ = cv2.getOptimalNewCameraMatrix(MTX, DIST, (w, h), alpha, (w, h))
     map1, map2 = cv2.initUndistortRectifyMap(MTX, DIST, None, new_mtx, (w, h), cv2.CV_32FC1)
     
-    # Create temp directory for frames
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Extract frames
-        extract_cmd = f'ffmpeg -y -i "{input_path}" -vsync 0 "{tmpdir}/frame_%06d.png" 2>/dev/null'
-        subprocess.run(extract_cmd, shell=True, check=True)
-        
-        # Process each frame
-        frame_files = sorted(Path(tmpdir).glob('frame_*.png'))
-        for frame_file in frame_files:
-            frame = cv2.imread(str(frame_file))
-            if frame is not None:
-                undistorted = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
-                cv2.imwrite(str(frame_file), undistorted)
-        
-        # Encode back to video
-        encode_cmd = f'ffmpeg -y -framerate {fps} -i "{tmpdir}/frame_%06d.png" -c:v libx264 -pix_fmt yuv420p "{output_path}" 2>/dev/null'
-        subprocess.run(encode_cmd, shell=True, check=True)
-        
-        if verbose:
-            print(f"  Processed {len(frame_files)} frames")
+    # FFmpeg decode pipe
+    decode_cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error',
+        '-i', str(input_path),
+        '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'
+    ]
+    
+    # FFmpeg encode pipe
+    encode_cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+        '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{w}x{h}', '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-preset', 'fast',
+        str(output_path)
+    ]
+    
+    # Start pipes
+    decode_proc = subprocess.Popen(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    encode_proc = subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    
+    frame_size = w * h * 3
+    frame_count = 0
+    
+    try:
+        while True:
+            raw_frame = decode_proc.stdout.read(frame_size)
+            if len(raw_frame) < frame_size:
+                break
+            
+            # Convert to numpy, undistort, write back
+            frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape((h, w, 3))
+            undistorted = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
+            encode_proc.stdin.write(undistorted.tobytes())
+            frame_count += 1
+    finally:
+        decode_proc.stdout.close()
+        encode_proc.stdin.close()
+        decode_proc.wait()
+        encode_proc.wait()
+    
+    if verbose:
+        print(f"  Processed {frame_count} frames")
     
     return True
 
 
-def preprocess_dataset(task: str, alpha: float, src_root: Path, dst_root: Path):
+def process_video_wrapper(args):
+    """Wrapper for parallel processing."""
+    input_path, output_path, alpha, idx, total = args
+    print(f"  [{idx}/{total}] {input_path.name}")
+    return undistort_video_pipe(input_path, output_path, alpha, verbose=True)
+
+
+def preprocess_dataset(task: str, alpha: float, src_root: Path, dst_root: Path, num_workers: int = 2):
     """Preprocess a task dataset to undistort front camera images."""
     src_dir = src_root / task
     dst_dir = dst_root / task
@@ -96,6 +120,7 @@ def preprocess_dataset(task: str, alpha: float, src_root: Path, dst_root: Path):
     print(f"Alpha: {alpha}")
     print(f"Source: {src_dir}")
     print(f"Destination: {dst_dir}")
+    print(f"Workers: {num_workers}")
     print(f"{'='*60}")
     
     # Create destination directory
@@ -116,11 +141,12 @@ def preprocess_dataset(task: str, alpha: float, src_root: Path, dst_root: Path):
         return
     
     # Copy wrist camera videos as-is (no distortion)
-    wrist_src = videos_dir / 'observation.images.wrist'
-    wrist_dst = dst_dir / 'videos' / 'observation.images.wrist'
-    if wrist_src.exists():
-        print("\nCopying wrist camera videos...")
-        shutil.copytree(wrist_src, wrist_dst, dirs_exist_ok=True)
+    # Handles: wrist (single-arm), left_wrist/right_wrist (dual-arm)
+    for video_subdir in videos_dir.iterdir():
+        if video_subdir.is_dir() and 'front' not in video_subdir.name:
+            dst_subdir = dst_dir / 'videos' / video_subdir.name
+            print(f"\nCopying {video_subdir.name}...")
+            shutil.copytree(video_subdir, dst_subdir, dirs_exist_ok=True)
     
     # Undistort front camera videos
     front_src = videos_dir / 'observation.images.front'
@@ -128,11 +154,19 @@ def preprocess_dataset(task: str, alpha: float, src_root: Path, dst_root: Path):
     if front_src.exists():
         print("\nUndistorting front camera videos...")
         video_files = list(front_src.rglob('*.mp4'))
-        for i, video_file in enumerate(video_files):
-            relative_path = video_file.relative_to(front_src)
-            output_file = front_dst / relative_path
-            print(f"  [{i+1}/{len(video_files)}] {relative_path}")
-            undistort_video(video_file, output_file, alpha)
+        
+        # Parallel processing
+        tasks = [
+            (video_file, front_dst / video_file.relative_to(front_src), alpha, i+1, len(video_files))
+            for i, video_file in enumerate(video_files)
+        ]
+        
+        if num_workers > 1:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                list(executor.map(process_video_wrapper, tasks))
+        else:
+            for t in tasks:
+                process_video_wrapper(t)
     
     # Update info.json to mark as preprocessed
     info_path = dst_dir / 'meta' / 'info.json'
@@ -156,6 +190,7 @@ def main():
                         help='Source dataset root')
     parser.add_argument('--dst', type=str, default='/home/admin/Desktop/eai-final-project/eai-dataset-undistorted',
                         help='Destination dataset root')
+    parser.add_argument('--workers', type=int, default=2, help='Number of parallel workers')
     parser.add_argument('--all', action='store_true', help='Process all tasks')
     args = parser.parse_args()
     
@@ -164,9 +199,9 @@ def main():
     
     if args.all:
         for task in ['lift', 'stack', 'sort']:
-            preprocess_dataset(task, args.alpha, src_root, dst_root)
+            preprocess_dataset(task, args.alpha, src_root, dst_root, args.workers)
     else:
-        preprocess_dataset(args.task, args.alpha, src_root, dst_root)
+        preprocess_dataset(args.task, args.alpha, src_root, dst_root, args.workers)
 
 
 if __name__ == '__main__':
