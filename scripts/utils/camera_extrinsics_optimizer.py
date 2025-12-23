@@ -41,10 +41,12 @@ PROJ_MATRIX = np.array([
 ], dtype=np.float64)
 
 
-def get_grid_3d_points(num_samples_per_line: int = 30) -> np.ndarray:
+def get_grid_3d_points(num_samples_per_line: int = 30, num_samples_across_width: int = 3) -> np.ndarray:
     """
     Extract 3D grid line points for the small rectangle (x1-x2, y1-y2).
     Skip the y2 line (has reflective issues).
+    
+    Samples multiple points across the tape width for better gradient.
     """
     tape_half_width = 0.009
     w = tape_half_width
@@ -61,18 +63,35 @@ def get_grid_3d_points(num_samples_per_line: int = 30) -> np.ndarray:
 
     points = []
     
+    # Width offsets: sample across tape width (perpendicular to tape direction)
+    width_offsets = np.linspace(-w, w, num_samples_across_width)
+    
     # 3 lines (skip y2 which has reflective issues):
-    # Row at y1: from x1 to x2
+    
+    # Row at y1 (horizontal): from x1 to x2
+    # Width is perpendicular = in Y direction
     for t in np.linspace(x1, x2 + 2*w, num_samples_per_line):
-        points.append([t, y1 + w, z])
+        for offset in width_offsets:
+            points.append([t, y1 + w + offset, z])
     
-    # Col at x1: from y1 to y2
+    # Col at x1 (vertical): from y1 to y2
+    # Width is perpendicular = in X direction
     for t in np.linspace(y1, y2 + 2*w, num_samples_per_line):
-        points.append([x1 + w, t, z])
+        for offset in width_offsets:
+            points.append([x1 + w + offset, t, z])
     
-    # Col at x2: from y1 to y2
+    # Col at x2 (vertical): from y1 to y2
+    # Width is perpendicular = in X direction
     for t in np.linspace(y1, y2 + 2*w, num_samples_per_line):
-        points.append([x2 + w, t, z])
+        for offset in width_offsets:
+            points.append([x2 + w + offset, t, z])
+    
+    # Row at y2 (horizontal, partial): from x1 to midpoint (x1+x2)/2
+    # The right half has reflective issues, so only use left half
+    x_mid = (x1 + x2) / 2
+    for t in np.linspace(x1, x_mid, num_samples_per_line // 2):
+        for offset in width_offsets:
+            points.append([t, y2 + w + offset, z])
     
     return np.array(points, dtype=np.float64)
 
