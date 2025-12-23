@@ -18,7 +18,7 @@ from scripts.so101 import SO101
 
 
 
-@register_env("Track1-v0", max_episode_steps=200)
+@register_env("Track1-v0", max_episode_steps=800)  # Default high, actual limit from config
 class Track1Env(BaseEnv):
     SUPPORTED_ROBOTS = ["so101", ("so101", "so101")]
     agent: SO101

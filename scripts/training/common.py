@@ -177,10 +177,14 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     
     reconfiguration_freq = 1 if for_eval else None
     
+    # Get max_episode_steps from config (default to registered value if not specified)
+    max_episode_steps = cfg.env.get("max_episode_steps", None)
+    
     env = gym.make(
         cfg.env.env_id,
         num_envs=num_envs,
         reconfiguration_freq=reconfiguration_freq,
+        max_episode_steps=max_episode_steps,
         **env_kwargs
     )
     

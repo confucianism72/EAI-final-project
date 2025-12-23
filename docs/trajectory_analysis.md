@@ -120,6 +120,22 @@ python scripts/train.py 'control.action_bounds={shoulder_pan: 0.05, shoulder_lif
 | `configs/control/single_arm.yaml` | Lift, Stack | 单臂任务的 per-joint bounds |
 | `configs/control/dual_arm.yaml` | Sort | 双臂任务的 per-joint bounds (更大范围) |
 
+### Max Episode Steps
+
+基于轨迹分析设置每个任务的最大步数：
+
+| 任务 | 真实轨迹最大步数 | 推荐 max_episode_steps |
+|------|-----------------|----------------------|
+| Lift | 296 | 355 (默认) |
+| Stack | 384 | 461 |
+| Sort | 619 | 743 |
+
+```bash
+# 覆盖 max_episode_steps
+python scripts/train.py env.max_episode_steps=461  # Stack 任务
+python scripts/train.py env.max_episode_steps=743 env.task=sort control=dual_arm  # Sort 任务
+```
+
 ---
 
 *分析脚本: `scripts/analyze_trajectory.py`*  

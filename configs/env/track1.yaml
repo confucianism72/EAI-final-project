@@ -5,3 +5,7 @@ control_mode: "pd_joint_target_delta_pos"
 camera_mode: "direct_pinhole"
 obs_mode: "rgb"
 include_state: true
+
+# Max episode steps based on trajectory analysis (with 20% buffer)
+# lift: max 296 -> 355, sort: max 619 -> 743, stack: max 384 -> 461
+max_episode_steps: 355  # Default for lift task
