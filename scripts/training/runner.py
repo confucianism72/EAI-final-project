@@ -58,11 +58,11 @@ class PPORunner:
         self.envs = make_env(cfg, self.num_envs)
         
         # Eval env with video recording
-        video_dir = None
+        self.video_dir = None
         if cfg.capture_video:
             output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
-            video_dir = str(output_dir / "videos")
-        self.eval_envs = make_env(cfg, cfg.training.num_eval_envs, for_eval=True, video_dir=video_dir)
+            self.video_dir = str(output_dir / "videos")
+        self.eval_envs = make_env(cfg, cfg.training.num_eval_envs, for_eval=True, video_dir=self.video_dir)
         
         # Determine observation/action dimensions
         obs_space = self.envs.single_observation_space
@@ -438,6 +438,10 @@ class PPORunner:
                     "eval/return": mean_return,
                     "eval/success_rate": success_rate,
                 }, step=self.global_step)
+        
+        # Async split videos if video recording is enabled
+        if self.video_dir is not None:
+            self._async_split_videos()
 
     def _save_checkpoint(self, iteration):
         """Save model checkpoint."""
@@ -446,3 +450,32 @@ class PPORunner:
             model_path = output_dir / f"ckpt_{iteration}.pt"
             torch.save(self.agent.state_dict(), model_path)
             torch.save(self.agent.state_dict(), output_dir / "latest.pt")
+
+    def _async_split_videos(self):
+        """Asynchronously split tiled eval videos into individual env videos."""
+        import subprocess
+        
+        video_dir = Path(self.video_dir)
+        if not video_dir.exists():
+            return
+        
+        # Find any mp4 files that haven't been split yet
+        mp4_files = list(video_dir.glob("*.mp4"))
+        if not mp4_files:
+            return
+        
+        # Spawn background process to split videos
+        # Uses the split_video.py script with --rgb_only flag
+        cmd = [
+            "python", "scripts/utils/split_video.py",
+            str(video_dir),
+            "--num_envs", str(self.cfg.training.num_eval_envs),
+        ]
+        
+        # Run in background (non-blocking)
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True  # Detach from parent process
+        )
