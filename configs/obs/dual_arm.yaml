@@ -1,0 +1,10 @@
+# Observation normalization for dual-arm tasks (Sort)
+# Derived from real trajectory analysis - qvel = diff(qpos) * 30fps
+
+enabled: true
+
+# Per-joint qvel clip ranges (rad/s)
+# Format: [left_shoulder_pan, left_shoulder_lift, left_elbow_flex, left_wrist_flex, left_wrist_roll, left_gripper,
+#          right_shoulder_pan, right_shoulder_lift, right_elbow_flex, right_wrist_flex, right_wrist_roll, right_gripper]
+# Values: 99th percentile from real data × 1.2 buffer
+qvel_clip: [2.0, 3.7, 3.7, 1.7, 1.0, 2.0, 2.0, 3.7, 3.5, 1.7, 0.7, 2.1]

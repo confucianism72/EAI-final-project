@@ -36,12 +36,20 @@ class Track1Env(BaseEnv):
         action_bounds: dict = None,  # Per-joint action bounds override
         camera_extrinsic: list = None,  # Camera extrinsic matrix (4x4 cam2world)
         undistort_alpha: float = 0.25,  # Undistortion alpha for pinhole modes
+        obs_normalization: dict = None,  # Obs normalization config (qvel_clip, etc.)
         **kwargs
     ):
         self.task = task
         self.domain_randomization = domain_randomization
         self.camera_extrinsic = camera_extrinsic  # Store for use in _default_sensor_configs
         self.undistort_alpha = undistort_alpha  # For pinhole output modes
+        
+        # Obs normalization config
+        if obs_normalization is None:
+            obs_normalization = {}
+        self.obs_normalize_enabled = obs_normalization.get("enabled", False)
+        # Per-joint qvel clip ranges: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+        self.qvel_clip = obs_normalization.get("qvel_clip", [1.0, 2.5, 2.0, 1.0, 0.6, 1.5])
 
         self.render_scale = render_scale
         
@@ -495,13 +503,25 @@ class Track1Env(BaseEnv):
         return obs, reward, terminated, truncated, info
 
     def _get_obs_state_dict(self, info: dict):
-        """Override to filter left arm obs for single-arm tasks."""
+        """Override to filter left arm obs and apply normalization."""
         obs = super()._get_obs_state_dict(info)
         
         if self.single_arm_mode and "agent" in obs:
             # Remove left arm (so101-1) from agent observations
             if "so101-1" in obs["agent"]:
                 del obs["agent"]["so101-1"]
+        
+        # Apply qvel normalization
+        if self.obs_normalize_enabled and "agent" in obs:
+            qvel_clip = torch.tensor(self.qvel_clip, device=self.device)
+            
+            for agent_key in obs["agent"]:
+                if "qvel" in obs["agent"][agent_key]:
+                    qvel = obs["agent"][agent_key]["qvel"]
+                    # Clip and normalize: qvel_norm = clip(qvel, -clip, +clip) / clip → [-1, 1]
+                    qvel_clipped = torch.clamp(qvel, -qvel_clip, qvel_clip)
+                    qvel_normalized = qvel_clipped / qvel_clip
+                    obs["agent"][agent_key]["qvel"] = qvel_normalized
         
         return obs
 

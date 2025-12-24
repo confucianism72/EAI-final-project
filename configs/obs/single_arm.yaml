@@ -1,0 +1,9 @@
+# Observation normalization for single-arm tasks (Lift, Stack)
+# Derived from real trajectory analysis - qvel = diff(qpos) * 30fps
+
+enabled: true
+
+# Per-joint qvel clip ranges (rad/s)
+# Format: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+# Values: 99th percentile from real data × 1.2 buffer
+qvel_clip: [1.0, 2.5, 2.0, 1.0, 0.6, 1.5]

@@ -185,6 +185,11 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     # Get domain randomization flag (default True for backwards compat)
     domain_randomization = cfg.env.get("domain_randomization", True)
     
+    # Get obs normalization config
+    obs_normalization = None
+    if "obs" in cfg:
+        obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True)
+    
     env_kwargs = dict(
         task=cfg.env.task,
         control_mode=cfg.env.control_mode,
@@ -196,6 +201,7 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         action_bounds=action_bounds,
         camera_extrinsic=camera_extrinsic,
         undistort_alpha=undistort_alpha,
+        obs_normalization=obs_normalization,
         sim_config=sim_config,
         render_mode="sensors",  # 'sensors' works with RecordEpisode, shows RGB only
         sim_backend="physx_cuda",
