@@ -8,7 +8,7 @@ reward_type: "staged"
 weights:
   reach: 1.0         # Approach cube
   grasp: 2.0         # Successfully grasp
-  lift: 5.0          # Lift cube up
+  lift: 100.0        # Lift cube up (height in meters, so needs high weight)
   success: 10.0      # Task completion bonus
 
 # Scaling

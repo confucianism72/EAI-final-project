@@ -182,11 +182,15 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         if "undistort_alpha" in cfg.env.camera:
             undistort_alpha = cfg.env.camera.undistort_alpha
     
+    # Get domain randomization flag (default True for backwards compat)
+    domain_randomization = cfg.env.get("domain_randomization", True)
+    
     env_kwargs = dict(
         task=cfg.env.task,
         control_mode=cfg.env.control_mode,
         camera_mode=cfg.env.camera_mode,
         obs_mode=cfg.env.obs_mode,
+        domain_randomization=domain_randomization,
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
         reward_config=reward_config,
         action_bounds=action_bounds,

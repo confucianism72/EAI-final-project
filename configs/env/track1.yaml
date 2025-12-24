@@ -3,8 +3,9 @@ env_id: "Track1-v0"
 task: "lift"
 control_mode: "pd_joint_target_delta_pos"
 camera_mode: "direct_pinhole"
-obs_mode: "rgb"
+obs_mode: "state"          # Use state for max speed (no rendering)
 include_state: true
+domain_randomization: false  # Disable for faster training (enable for sim2real)
 
 # Simulation frequency (must match real robot for sim2real)
 # Real robot data is 30 FPS
