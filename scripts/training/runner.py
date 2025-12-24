@@ -393,28 +393,33 @@ class PPORunner:
         print("Running evaluation...")
         eval_obs, _ = self.eval_envs.reset()
         eval_returns = []
+        episode_rewards = torch.zeros(self.cfg.training.num_eval_envs, device=self.device)
         
-        for _ in range(self.cfg.training.num_eval_steps):
+        # Run until we have completed at least num_eval_envs episodes
+        # or hit max_steps (episode_length * 2 to ensure completion)
+        max_steps = int(self.cfg.env.episode_steps.base * self.cfg.env.episode_steps.multiplier * 2)
+        
+        for step in range(max_steps):
             with torch.no_grad():
                 eval_action = self.agent.get_action(eval_obs, deterministic=True)
-            eval_obs, _, _, _, eval_infos = self.eval_envs.step(eval_action)
+            eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
             
-            if "final_info" in eval_infos:
-                mask = eval_infos["_final_info"]
-                for idx in torch.where(mask)[0]:
-                    # ManiSkill uses 'return', not 'r'
-                    ep_info = eval_infos["final_info"]["episode"]
-                    if "return" in ep_info:
-                        r = float(ep_info["return"][idx])
-                    elif "r" in ep_info:
-                        r = float(ep_info["r"][idx])
-                    else:
-                        continue
-                    eval_returns.append(r)
+            episode_rewards += reward
+            
+            # Check for episode completion
+            done = terminated | truncated
+            if done.any():
+                for idx in torch.where(done)[0]:
+                    eval_returns.append(episode_rewards[idx].item())
+                    episode_rewards[idx] = 0.0  # Reset for next episode
+            
+            # Stop after collecting enough episodes
+            if len(eval_returns) >= self.cfg.training.num_eval_envs:
+                break
         
         if eval_returns:
             mean_return = np.mean(eval_returns)
-            print(f"  eval/return = {mean_return:.4f}")
+            print(f"  eval/return = {mean_return:.4f} (n={len(eval_returns)})")
             if self.cfg.wandb.enabled:
                 wandb.log({"eval/return": mean_return}, step=self.global_step)
 
