@@ -393,6 +393,7 @@ class PPORunner:
         print("Running evaluation...")
         eval_obs, _ = self.eval_envs.reset()
         eval_returns = []
+        eval_successes = []
         episode_rewards = torch.zeros(self.cfg.training.num_eval_envs, device=self.device)
         
         # Run until we have completed at least num_eval_envs episodes
@@ -412,6 +413,11 @@ class PPORunner:
                 for idx in torch.where(done)[0]:
                     eval_returns.append(episode_rewards[idx].item())
                     episode_rewards[idx] = 0.0  # Reset for next episode
+                    
+                    # Check success from final_info (ManiSkill provides this)
+                    if "final_info" in eval_infos and "success" in eval_infos["final_info"]:
+                        success = bool(eval_infos["final_info"]["success"][idx])
+                        eval_successes.append(success)
             
             # Stop after collecting enough episodes
             if len(eval_returns) >= self.cfg.training.num_eval_envs:
@@ -419,9 +425,13 @@ class PPORunner:
         
         if eval_returns:
             mean_return = np.mean(eval_returns)
-            print(f"  eval/return = {mean_return:.4f} (n={len(eval_returns)})")
+            success_rate = np.mean(eval_successes) if eval_successes else 0.0
+            print(f"  eval/return = {mean_return:.4f}, success_rate = {success_rate:.2%} (n={len(eval_returns)})")
             if self.cfg.wandb.enabled:
-                wandb.log({"eval/return": mean_return}, step=self.global_step)
+                wandb.log({
+                    "eval/return": mean_return,
+                    "eval/success_rate": success_rate,
+                }, step=self.global_step)
 
     def _save_checkpoint(self, iteration):
         """Save model checkpoint."""
