@@ -206,8 +206,9 @@ class PPORunner:
             storage["obs"][step] = obs
             storage["bootstrap_mask"][step] = bootstrap_mask  # Store PRE-step mask for GAE
             
-            # Inference
-            action, logprob, _, value = self.policy(obs=obs)
+            # Inference (no gradients during rollout)
+            with torch.no_grad():
+                action, logprob, _, value = self.policy(obs=obs)
             storage["vals"][step] = value.flatten()
             storage["actions"][step] = action
             storage["logprobs"][step] = logprob
