@@ -56,7 +56,13 @@ class PPORunner:
         
         # Env setup
         self.envs = make_env(cfg, self.num_envs)
-        self.eval_envs = make_env(cfg, cfg.training.num_eval_envs, for_eval=True)
+        
+        # Eval env with video recording
+        video_dir = None
+        if cfg.capture_video:
+            output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
+            video_dir = str(output_dir / "videos")
+        self.eval_envs = make_env(cfg, cfg.training.num_eval_envs, for_eval=True, video_dir=video_dir)
         
         # Determine observation/action dimensions
         obs_space = self.envs.single_observation_space

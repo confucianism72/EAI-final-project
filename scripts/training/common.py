@@ -219,13 +219,14 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         **env_kwargs
     )
     
-    # Video Recording
+    # Video Recording (only for eval envs with capture_video enabled)
     if for_eval and video_dir and cfg.capture_video:
+        max_video_steps = int(cfg.env.episode_steps.base * cfg.env.episode_steps.multiplier)
         env = RecordEpisode(
             env,
             output_dir=video_dir,
             save_trajectory=False,
-            max_steps_per_video=cfg.training.num_eval_steps,
+            max_steps_per_video=max_video_steps,
             video_fps=30
         )
 
