@@ -540,9 +540,11 @@ class PPORunner:
             
             # Save per-step reward data as CSV alongside videos
             import csv
+            from pathlib import Path
+            video_dir_path = Path(self.video_dir)
             for env_idx, steps in step_reward_data.items():
                 if steps:  # Only save if we have data
-                    csv_path = self.video_dir / f"step_{self.global_step}_env{env_idx}_rewards.csv"
+                    csv_path = video_dir_path / f"step_{self.global_step}_env{env_idx}_rewards.csv"
                     with open(csv_path, 'w', newline='') as f:
                         writer = csv.DictWriter(f, fieldnames=steps[0].keys())
                         writer.writeheader()
