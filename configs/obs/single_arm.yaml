@@ -3,6 +3,10 @@
 
 enabled: true
 
+# qpos normalization scale (divide by this value)
+# Default π works for most robots with joint limits ±π
+qpos_scale: 3.14159
+
 # Per-joint qvel clip ranges (rad/s) - 99th percentile × 1.2 buffer
 # Format: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
 qvel_clip: [1.0, 2.5, 2.0, 1.0, 0.6, 1.5]
@@ -17,13 +21,13 @@ relative_pos_clip: 0.5
 # - ["tcp_pos", "red_cube_pos"] or true: include both
 include_abs_pos: ["tcp_pos", "red_cube_pos"]
 
-# How to include target_qpos in agent obs:
-# - true: include target_qpos (normalized by π)
-# - false: exclude target_qpos entirely
-# - "relative": include (target_qpos - qpos) / action_bounds (tracking error in action scale)
+# How to include target_qpos:
+# - true: include target_qpos / qpos_scale
+# - false: exclude
+# - "relative": (target_qpos - qpos) / action_bounds
 include_target_qpos: "relative"
 
-# Action bounds for target_qpos normalization (synced from control config via Hydra)
+# Action bounds for relative target_qpos normalization
 action_bounds: ${control.action_bounds}
 
 # Absolute position normalization: (pos - mean) / std

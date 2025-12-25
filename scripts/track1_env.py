@@ -48,6 +48,8 @@ class Track1Env(BaseEnv):
         if obs_normalization is None:
             obs_normalization = {}
         self.obs_normalize_enabled = obs_normalization.get("enabled", False)
+        # qpos normalization scale (default π)
+        self.qpos_scale = obs_normalization.get("qpos_scale", np.pi)
         # Per-joint qvel clip ranges
         self.qvel_clip = obs_normalization.get("qvel_clip", [1.0, 2.5, 2.0, 1.0, 0.6, 1.5])
         # Relative position clip (tcp_to_red_pos, etc.)
@@ -536,7 +538,7 @@ class Track1Env(BaseEnv):
                 
                 # qpos: divide by π → approximately [-1, 1] for typical joint ranges
                 if raw_qpos is not None:
-                    agent_obs["qpos"] = raw_qpos / np.pi
+                    agent_obs["qpos"] = raw_qpos / self.qpos_scale
                 
                 # target_qpos handling based on include_target_qpos setting
                 if "controller" in agent_obs and "target_qpos" in agent_obs["controller"]:
@@ -546,7 +548,7 @@ class Track1Env(BaseEnv):
                         # Replace with tracking error: (target_qpos - qpos) / action_bounds
                         tracking_error = target_qpos - raw_qpos
                         
-                        # Normalize by action bounds if available, otherwise fall back to π
+                        # Normalize by action bounds if available, otherwise fall back to qpos_scale
                         if self.obs_action_bounds is not None:
                             # Convert dict to tensor in joint order
                             joint_order = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
@@ -554,10 +556,10 @@ class Track1Env(BaseEnv):
                             bounds = torch.tensor(bounds_list, device=self.device)
                             agent_obs["controller"]["target_qpos"] = tracking_error / bounds
                         else:
-                            agent_obs["controller"]["target_qpos"] = tracking_error / np.pi
+                            agent_obs["controller"]["target_qpos"] = tracking_error / self.qpos_scale
                     elif self.include_target_qpos:
                         # Include normalized target_qpos
-                        agent_obs["controller"]["target_qpos"] = target_qpos / np.pi
+                        agent_obs["controller"]["target_qpos"] = target_qpos / self.qpos_scale
                     else:
                         # Exclude target_qpos entirely
                         del agent_obs["controller"]["target_qpos"]
