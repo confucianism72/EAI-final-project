@@ -152,6 +152,21 @@ class Track1Env(BaseEnv):
         # Convert hold time to steps (at control_freq, default 30 Hz)
         control_freq = getattr(self, 'control_freq', 30)
         self.stable_hold_steps = int(self.stable_hold_time * control_freq)
+        
+        # Fail bounds: cube XY must stay within this rectangle
+        fail_bounds = reward_config.get("fail_bounds", None)
+        if fail_bounds:
+            self.fail_bounds = {
+                "x_min": fail_bounds.get("x_min", 0.0),
+                "x_max": fail_bounds.get("x_max", 1.0),
+                "y_min": fail_bounds.get("y_min", 0.0),
+                "y_max": fail_bounds.get("y_max", 1.0),
+            }
+        else:
+            self.fail_bounds = None
+        
+        # Fail penalty weight
+        self.reward_weights["fail"] = weights.get("fail", 0.0)
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1186,8 +1201,21 @@ class Track1Env(BaseEnv):
             result = self._evaluate_lift()
             # Mark fail if fallen
             result["fail"] = red_fallen
-            # Ensure success is False if fallen
-            result["success"] = result["success"] & (~red_fallen)
+            
+            # Check if cube is out of bounds (XY)
+            if self.fail_bounds is not None:
+                red_pos = self.red_cube.pose.p
+                out_of_bounds = (
+                    (red_pos[:, 0] < self.fail_bounds["x_min"]) |
+                    (red_pos[:, 0] > self.fail_bounds["x_max"]) |
+                    (red_pos[:, 1] < self.fail_bounds["y_min"]) |
+                    (red_pos[:, 1] > self.fail_bounds["y_max"])
+                )
+                result["out_of_bounds"] = out_of_bounds
+                result["fail"] = result["fail"] | out_of_bounds
+            
+            # Ensure success is False if failed
+            result["success"] = result["success"] & (~result["fail"])
             
         elif self.task == "stack":
             green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
@@ -1379,15 +1407,20 @@ class Track1Env(BaseEnv):
         # 3. Lift reward: height of cube
         lift_reward = torch.clamp(cube_height, min=0.0)
         
-        # 4. Success bonus: cube lifted above threshold
+        # 4. Success bonus: cube lifted above threshold for stable_hold_time
         success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         success_bonus = success.float()
+        
+        # 5. Fail penalty: cube out of bounds or fallen
+        fail = info.get("fail", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
+        fail_penalty = fail.float()
         
         # Weighted sum (use negative weights for penalties)
         reward = (w["approach"] * approach_reward +
                   w["horizontal_displacement"] * horizontal_displacement +
                   w["lift"] * lift_reward + 
-                  w["success"] * success_bonus)
+                  w["success"] * success_bonus +
+                  w["fail"] * fail_penalty)
         
         # Store reward components for logging (mean across envs for efficiency)
         info["reward_components"] = {
@@ -1395,6 +1428,7 @@ class Track1Env(BaseEnv):
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean().item(),
             "lift": (w["lift"] * lift_reward).mean().item(),
             "success": (w["success"] * success_bonus).mean().item(),
+            "fail": (w["fail"] * fail_penalty).mean().item(),
         }
         
         return reward

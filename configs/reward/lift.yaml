@@ -4,12 +4,13 @@ reward_mode: "dense"
 # Reward type: "parallel" (all components at once) or "staged" (curriculum)
 reward_type: "parallel"
 
-# Reward weights(use negative for penalty)
+# Reward weights (use negative for penalty)
 weights:
   approach: 2.0        # Approach cube (gripper reference point → cube center)
   horizontal_displacement: -50.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
   success: 10.0        # Task completion bonus
+  fail: -100.0         # Penalty when cube goes out of bounds
 
 # Approach reward curve (piecewise linear)
 # reward = 1.0 if distance < threshold
@@ -25,6 +26,15 @@ gripper_outward_offset: 0.015  # Perpendicular: outward for cube (1.5cm)
 # Success condition: cube must stay >= lift_target for stable_hold_time seconds
 lift_target: 0.05           # Height threshold (5cm)
 stable_hold_time: 10.0      # Required hold time in seconds (at 30Hz = 300 steps)
+
+# Fail condition: cube XY must stay within this rectangle (meters)
+# If cube goes outside, episode terminates with fail penalty
+# Set to null or remove to disable bounds checking
+fail_bounds:
+  x_min: 0.35   
+  x_max: 0.55
+  y_min: 0.15
+  y_max: 0.35
 
 # Stage thresholds (for staged reward)
 stages:
