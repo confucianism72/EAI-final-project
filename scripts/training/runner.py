@@ -11,6 +11,8 @@ import time
 from collections import deque
 from functools import partial
 from pathlib import Path
+import sys
+import subprocess
 
 import gymnasium as gym
 import hydra
@@ -119,6 +121,8 @@ class PPORunner:
         self.avg_returns = deque(maxlen=20)
         self.reward_component_sum = {}  # Accumulated reward components
         self.reward_component_count = 0  # Step count for averaging
+        self.success_count = 0  # Success events during rollout
+        self.fail_count = 0  # Fail events during rollout
         
         # Termination tracking for logging
         self.terminated_count = 0
@@ -230,6 +234,11 @@ class PPORunner:
                 for k, v in infos["reward_components"].items():
                     self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + v
                 self.reward_component_count += 1
+            # Accumulate success/fail counts
+            if "success_count" in infos:
+                self.success_count += infos["success_count"]
+            if "fail_count" in infos:
+                self.fail_count += infos["fail_count"]
             next_obs_flat = self._flatten_obs(next_obs)
             
             # Log episode info when episodes end (ManiSkill doesn't use final_info pattern)
@@ -379,9 +388,14 @@ class PPORunner:
                 if self.reward_component_count > 0:
                     for name, total in self.reward_component_sum.items():
                         logs[f"reward/{name}"] = total / self.reward_component_count
+                    # Add success/fail counts (total in this rollout)
+                    logs["reward/success_count"] = self.success_count
+                    logs["reward/fail_count"] = self.fail_count
                     # Reset for next rollout
                     self.reward_component_sum = {}
                     self.reward_component_count = 0
+                    self.success_count = 0
+                    self.fail_count = 0
                 
                 if self.cfg.wandb.enabled:
                     wandb.log(logs, step=self.global_step)
@@ -398,6 +412,14 @@ class PPORunner:
     def _evaluate(self):
         """Run evaluation episodes."""
         print("Running evaluation...")
+        
+        # Close old eval envs to reset video recorder
+        if hasattr(self, "eval_envs") and self.eval_envs is not None:
+            self.eval_envs.close()
+        
+        # Recreate eval envs
+        self.eval_envs = make_env(self.cfg, self.cfg.training.num_eval_envs, for_eval=True, video_dir=self.video_dir)
+        
         eval_obs, _ = self.eval_envs.reset()
         eval_returns = []
         eval_successes = []
@@ -407,9 +429,19 @@ class PPORunner:
         eval_reward_components = {}
         eval_component_count = 0
         
-        # Run until we have completed at least num_eval_envs episodes
-        # or hit max_steps (episode_length * 2 to ensure completion)
-        max_steps = int(self.cfg.env.episode_steps.base * self.cfg.env.episode_steps.multiplier * 2)
+        # Compute max_steps for the evaluation loop
+        base = self.cfg.env.episode_steps.get("base", 296)
+        multiplier = self.cfg.env.episode_steps.get("multiplier", 1.2)
+        hold_steps = 0
+        if "reward" in self.cfg and "stable_hold_time" in self.cfg.reward:
+            hold_steps = int(self.cfg.reward.stable_hold_time * self.cfg.env.get("control_freq", 30))
+        
+        training_steps = int(base * multiplier) + hold_steps
+        eval_multiplier = self.cfg.training.get("eval_step_multiplier", 1.0)
+        max_steps = int(training_steps * eval_multiplier)
+        
+        # Add a small buffer to ensure we hit truncation if it happens at exactly max_steps
+        max_steps += 2
         
         for step in range(max_steps):
             with torch.no_grad():
@@ -487,7 +519,7 @@ class PPORunner:
         # Spawn background process to split videos
         # Uses the split_video.py script with --rgb_only flag
         cmd = [
-            "python", "scripts/utils/split_video.py",
+            sys.executable, "scripts/utils/split_video.py",
             str(video_dir),
             "--num_envs", str(self.cfg.training.num_eval_envs),
         ]

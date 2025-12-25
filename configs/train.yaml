@@ -27,7 +27,8 @@ training:
   num_envs: 2048
   num_eval_envs: 8
   num_steps: 50
-  num_eval_steps: 100
+  num_eval_steps: null
+  eval_step_multiplier: 1.0
   eval_freq: 25
 
 # PPO hyperparameters

@@ -1426,14 +1426,17 @@ class Track1Env(BaseEnv):
                   w["success"] * success_bonus +
                   w["fail"] * fail_penalty)
         
-        # Store reward components for logging (mean across envs for efficiency)
+        # Store reward components for logging
+        # Dense rewards: mean across envs (continuous signals)
+        # Success/Fail: count of envs (discrete events)
         info["reward_components"] = {
             "approach": (w["approach"] * approach_reward).mean().item(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean().item(),
             "lift": (w["lift"] * lift_reward).mean().item(),
-            "success": (w["success"] * success_bonus).mean().item(),
-            "fail": (w["fail"] * fail_penalty).mean().item(),
         }
+        # Track success/fail counts separately (not averaged)
+        info["success_count"] = success.sum().item()
+        info["fail_count"] = fail.sum().item()
         
         return reward
 

@@ -209,7 +209,7 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     
     reconfiguration_freq = 1 if for_eval else None
     
-    # Compute max_episode_steps from base * multiplier + stable_hold_steps
+    # Compute max_episode_steps: (base * multiplier) + hold_steps
     if "episode_steps" in cfg.env:
         base = cfg.env.episode_steps.get("base", 296)
         multiplier = cfg.env.episode_steps.get("multiplier", 1.2)
@@ -221,6 +221,11 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
             control_freq = cfg.env.get("control_freq", 30)
             stable_hold_steps = int(stable_hold_time * control_freq)
             max_episode_steps += stable_hold_steps
+        
+        # Scale for evaluation if needed
+        if for_eval:
+            eval_multiplier = cfg.training.get("eval_step_multiplier", 1.0)
+            max_episode_steps = int(max_episode_steps * eval_multiplier)
     else:
         max_episode_steps = cfg.env.get("max_episode_steps", None)
     

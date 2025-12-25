@@ -18,7 +18,7 @@ control_freq: 30    # Control frequency (Hz) - MUST match real data (30 Hz)
 # stable_hold_steps is computed from reward.stable_hold_time * control_freq
 episode_steps:
   base: 296         # Base from trajectory analysis (lift max)
-  multiplier: 2   # 20% buffer for RL exploration
+  multiplier: 1.2   # 20% buffer for RL exploration
   # Effective max_episode_steps for lift with 10s hold:
   # 296 * 1.2 + (10 * 30) = 355 + 300 = 655 steps
   # Effective max_episode_steps = 296 * 1.2 = 355 (for lift)
