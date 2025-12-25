@@ -40,6 +40,14 @@ fail_bounds:
   y_min: 0.15
   y_max: 0.35
 
+# Spawn bounds: where the red cube is randomly spawned at episode start
+# If not set, uses the default grid_bounds["right"] from environment
+spawn_bounds:
+  x_min: 0.40
+  x_max: 0.50
+  y_min: 0.20
+  y_max: 0.30
+
 # Stage thresholds (for staged reward)
 stages:
   approach_threshold: 0.05  # Distance to unlock next stage (5cm)

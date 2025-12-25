@@ -168,6 +168,18 @@ class Track1Env(BaseEnv):
         
         # Fail penalty weight
         self.reward_weights["fail"] = weights.get("fail", 0.0)
+        
+        # Spawn bounds: where the red cube is randomly spawned
+        spawn_bounds = reward_config.get("spawn_bounds", None)
+        if spawn_bounds:
+            self.spawn_bounds = {
+                "x_min": spawn_bounds.get("x_min", 0.35),
+                "x_max": spawn_bounds.get("x_max", 0.55),
+                "y_min": spawn_bounds.get("y_min", 0.15),
+                "y_max": spawn_bounds.get("y_max", 0.35),
+            }
+        else:
+            self.spawn_bounds = None  # Will use grid_bounds["right"] as default
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1118,8 +1130,9 @@ class Track1Env(BaseEnv):
             self._initialize_robot_poses(b, env_idx)
             
             if self.task == "lift":
-                # Red cube random in Right Grid (no green cube in lift task)
-                red_pos = self._random_grid_position(b, self.grid_bounds["right"], z=0.015)
+                # Red cube random in configured spawn_bounds (or default grid)
+                spawn_grid = self.spawn_bounds if self.spawn_bounds else self.grid_bounds["right"]
+                red_pos = self._random_grid_position(b, spawn_grid, z=0.015)
                 self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
                 
                 # Store initial cube XY for horizontal penalty in reward
