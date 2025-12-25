@@ -187,6 +187,10 @@ class Track1Env(BaseEnv):
         self.moving_jaw_outward_offset = reward_config.get("moving_jaw_outward_offset", 0.01)
         self.approach2_threshold = reward_config.get("approach2_threshold", 0.01)
         self.approach2_zero_point = reward_config.get("approach2_zero_point", 0.20)
+        
+        # Action rate penalty (anti-jitter)
+        self.reward_weights["action_rate"] = weights.get("action_rate", 0.0)
+        self.prev_action = None  # Will be initialized on first step
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1152,6 +1156,10 @@ class Track1Env(BaseEnv):
                     self.lift_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
                 self.lift_hold_counter[env_idx] = 0
                 
+                # Reset prev_action for action rate penalty (set to None to skip first step penalty)
+                # Note: prev_action is per-env, so we just clear the whole tensor on any reset
+                self.prev_action = None
+                
             elif self.task == "stack":
                 # Both cubes in Right Grid, non-overlapping
                 # Minimum distance: 3cm * sqrt(2) ≈ 4.3cm (diagonal of cube)
@@ -1333,7 +1341,7 @@ class Track1Env(BaseEnv):
     def compute_dense_reward(self, obs, action, info):
         """Compute dense reward based on task."""
         if self.task == "lift":
-            return self._compute_lift_dense_reward(info)
+            return self._compute_lift_dense_reward(info, action)
         elif self.task == "stack":
             return self._compute_stack_dense_reward(info)
         elif self.task == "sort":
@@ -1458,7 +1466,7 @@ class Track1Env(BaseEnv):
         
         return ref_pos
 
-    def _compute_lift_dense_reward(self, info):
+    def _compute_lift_dense_reward(self, info, action=None):
         """Dense reward for Lift task.
         
         Components:
@@ -1466,7 +1474,8 @@ class Track1Env(BaseEnv):
         2. approach2: Encourage moving jaw to approach cube center
         3. horizontal_displacement: Cube XY displacement from initial position (meters)
         4. lift: Reward proportional to cube height
-        5. success: Bonus when cube is lifted above threshold
+        5. action_rate: Penalize action changes (anti-jitter)
+        6. success: Bonus when cube is lifted above threshold
         """
         # Get config values
         w = self.reward_weights
@@ -1514,11 +1523,33 @@ class Track1Env(BaseEnv):
         else:
             lift_reward = torch.clamp(cube_height, min=0.0)
         
-        # 5. Success bonus: cube lifted above threshold for stable_hold_time
+        # 5. Action rate penalty: ||action_t - action_{t-1}||^2
+        if action is not None and w.get("action_rate", 0.0) != 0:
+            # Convert action to tensor if needed
+            if isinstance(action, dict):
+                # Dict action space - concatenate all values
+                action_tensor = torch.cat([v.flatten(start_dim=1) for v in action.values()], dim=1)
+            else:
+                action_tensor = action.flatten(start_dim=1) if action.dim() > 1 else action.unsqueeze(0)
+            
+            if self.prev_action is None:
+                # First step: no penalty
+                action_rate = torch.zeros(self.num_envs, device=self.device)
+            else:
+                # Compute squared L2 norm of action difference
+                action_diff = action_tensor - self.prev_action
+                action_rate = torch.sum(action_diff ** 2, dim=1)
+            
+            # Update prev_action for next step
+            self.prev_action = action_tensor.clone()
+        else:
+            action_rate = torch.zeros(self.num_envs, device=self.device)
+        
+        # 6. Success bonus: cube lifted above threshold for stable_hold_time
         success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         success_bonus = success.float()
         
-        # 6. Fail penalty: cube out of bounds or fallen
+        # 7. Fail penalty: cube out of bounds or fallen
         fail = info.get("fail", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         fail_penalty = fail.float()
         
@@ -1527,6 +1558,7 @@ class Track1Env(BaseEnv):
                   w.get("approach2", 0.0) * approach2_reward +
                   w["horizontal_displacement"] * horizontal_displacement +
                   w["lift"] * lift_reward + 
+                  w.get("action_rate", 0.0) * action_rate +
                   w["success"] * success_bonus +
                   w["fail"] * fail_penalty)
         
@@ -1538,6 +1570,7 @@ class Track1Env(BaseEnv):
             "approach2": (w.get("approach2", 0.0) * approach2_reward).mean().item(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean().item(),
             "lift": (w["lift"] * lift_reward).mean().item(),
+            "action_rate": (w.get("action_rate", 0.0) * action_rate).mean().item(),
         }
         # Track success/fail counts separately (not averaged)
         info["success_count"] = success.sum().item()
