@@ -484,13 +484,14 @@ class PPORunner:
                     episode_rewards[idx] = 0.0  # Reset for next episode
                     
                     # Check success/fail from final_info (ManiSkill provides this)
+                    # Note: success/fail are tensors, use .item() to get Python bool
                     if "final_info" in eval_infos:
                         if "success" in eval_infos["final_info"]:
-                            success = bool(eval_infos["final_info"]["success"][idx])
-                            eval_successes.append(success)
+                            success = eval_infos["final_info"]["success"][idx].item()
+                            eval_successes.append(bool(success))
                         if "fail" in eval_infos["final_info"]:
-                            fail = bool(eval_infos["final_info"]["fail"][idx])
-                            eval_fails.append(fail)
+                            fail = eval_infos["final_info"]["fail"][idx].item()
+                            eval_fails.append(bool(fail))
             
             # Stop after collecting enough episodes
             if len(eval_returns) >= self.cfg.training.num_eval_envs:
