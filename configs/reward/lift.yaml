@@ -19,8 +19,12 @@ approach_zero_point: 0.20    # Distance where reward becomes 0 (20cm)
 
 # Gripper reference point offsets (in meters)
 # The reference point is where the cube center should be when properly grasped
-gripper_tip_offset: 0.015    # Along jaw: back from tip towards gripper_link (1.5cm)
-gripper_outward_offset: 0.015  # Perpendicular to jaw: outward for cube thickness (1.5cm = half of 3cm cube)
+gripper_tip_offset: 0.015    # Along jaw: back from tip (1.5cm)
+gripper_outward_offset: 0.015  # Perpendicular: outward for cube (1.5cm)
+
+# Success condition: cube must stay >= lift_target for stable_hold_time seconds
+lift_target: 0.05           # Height threshold (5cm)
+stable_hold_time: 10.0      # Required hold time in seconds (at 30Hz = 300 steps)
 
 # Stage thresholds (for staged reward)
 stages:

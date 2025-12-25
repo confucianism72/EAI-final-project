@@ -13,11 +13,14 @@ sim_freq: 120       # Physics simulation frequency (Hz)
 control_freq: 30    # Control frequency (Hz) - MUST match real data (30 Hz)
 
 # Max episode steps based on trajectory analysis
-# Formula: base_steps * multiplier
+# Formula: base_steps * multiplier + stable_hold_steps (from reward config)
 # lift: 296 steps, stack: 384 steps, sort: 619 steps (at 30 Hz)
+# stable_hold_steps is computed from reward.stable_hold_time * control_freq
 episode_steps:
   base: 296         # Base from trajectory analysis (lift max)
   multiplier: 1.2   # 20% buffer for RL exploration
+  # Effective max_episode_steps for lift with 10s hold:
+  # 296 * 1.2 + (10 * 30) = 355 + 300 = 655 steps
   # Effective max_episode_steps = 296 * 1.2 = 355 (for lift)
   # Override for stack: base=384, for sort: base=619
 

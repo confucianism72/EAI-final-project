@@ -209,11 +209,18 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     
     reconfiguration_freq = 1 if for_eval else None
     
-    # Compute max_episode_steps from base * multiplier (or use legacy format)
+    # Compute max_episode_steps from base * multiplier + stable_hold_steps
     if "episode_steps" in cfg.env:
         base = cfg.env.episode_steps.get("base", 296)
         multiplier = cfg.env.episode_steps.get("multiplier", 1.2)
         max_episode_steps = int(base * multiplier)
+        
+        # Add stable hold time from reward config (if present)
+        if "reward" in cfg and "stable_hold_time" in cfg.reward:
+            stable_hold_time = cfg.reward.stable_hold_time
+            control_freq = cfg.env.get("control_freq", 30)
+            stable_hold_steps = int(stable_hold_time * control_freq)
+            max_episode_steps += stable_hold_steps
     else:
         max_episode_steps = cfg.env.get("max_episode_steps", None)
     

@@ -145,6 +145,13 @@ class Track1Env(BaseEnv):
             "grasp": stages.get("grasp_threshold", 0.03),
             "lift": stages.get("lift_target", 0.05),
         }
+        
+        # Lift success config: cube must stay above lift_target for stable_hold_time
+        self.lift_target = reward_config.get("lift_target", 0.05)  # 5cm default
+        self.stable_hold_time = reward_config.get("stable_hold_time", 0.0)  # 0 = instant success
+        # Convert hold time to steps (at control_freq, default 30 Hz)
+        control_freq = getattr(self, 'control_freq', 30)
+        self.stable_hold_steps = int(self.stable_hold_time * control_freq)
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1104,6 +1111,11 @@ class Track1Env(BaseEnv):
                     self.initial_cube_xy = torch.zeros(self.num_envs, 2, device=self.device)
                 self.initial_cube_xy[env_idx] = red_pos[:, :2]
                 
+                # Reset stable hold counter for success condition
+                if not hasattr(self, 'lift_hold_counter'):
+                    self.lift_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+                self.lift_hold_counter[env_idx] = 0
+                
             elif self.task == "stack":
                 # Both cubes in Right Grid, non-overlapping
                 # Minimum distance: 3cm * sqrt(2) ≈ 4.3cm (diagonal of cube)
@@ -1196,10 +1208,33 @@ class Track1Env(BaseEnv):
         return result
 
     def _evaluate_lift(self):
-        """Lift: red cube >= 5cm above table."""
+        """Lift: red cube >= lift_target for stable_hold_time seconds.
+        
+        If stable_hold_time=0, success is instant (cube just needs to be above threshold).
+        Otherwise, cube must stay above threshold for stable_hold_steps consecutive steps.
+        """
         red_z = self.red_cube.pose.p[:, 2]
-        success = red_z >= 0.05
-        return {"success": success, "red_height": red_z}
+        is_above = red_z >= self.lift_target
+        
+        if self.stable_hold_steps <= 0:
+            # Instant success mode (backward compatible)
+            success = is_above
+        else:
+            # Stable hold mode: increment counter when above, reset when below
+            if not hasattr(self, 'lift_hold_counter'):
+                self.lift_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+            
+            # Increment counter where above threshold
+            self.lift_hold_counter = torch.where(
+                is_above,
+                self.lift_hold_counter + 1,
+                torch.zeros_like(self.lift_hold_counter)  # Reset if below
+            )
+            
+            # Success when counter reaches required hold steps
+            success = self.lift_hold_counter >= self.stable_hold_steps
+        
+        return {"success": success, "red_height": red_z, "hold_steps": self.lift_hold_counter if hasattr(self, 'lift_hold_counter') else 0}
 
     def _evaluate_stack(self):
         """Stack: red cube on top of green cube, stable on table."""
