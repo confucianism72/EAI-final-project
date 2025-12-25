@@ -8,15 +8,22 @@ enabled: true
 qvel_clip: [1.0, 2.5, 2.0, 1.0, 0.6, 1.5]
 
 # Relative position (tcp_to_red_pos) clip range in meters
-# Typical range is within ±0.5m
 relative_pos_clip: 0.5
 
 # Whether to include absolute positions in obs (tcp_pos, red_cube_pos)
-# Set to false to exclude them (since qpos implicitly encodes tcp_pos)
 include_abs_pos: true
 
+# How to include target_qpos in agent obs:
+# - true: include target_qpos (normalized by π)
+# - false: exclude target_qpos entirely
+# - "relative": include (target_qpos - qpos) / action_bounds (tracking error in action scale)
+include_target_qpos: "relative"
+
+# Action bounds for target_qpos normalization (synced from control config via Hydra)
+# This is used when include_target_qpos = "relative"
+action_bounds: ${control.action_bounds}
+
 # Absolute position normalization: (pos - mean) / std
-# For single-arm, tcp and cube are in similar workspace regions
 tcp_pos:
   mean: [0.3, 0.3, 0.2]
   std: [0.1, 0.1, 0.1]

@@ -54,6 +54,11 @@ class Track1Env(BaseEnv):
         self.relative_pos_clip = obs_normalization.get("relative_pos_clip", 0.5)
         # Whether to include absolute positions in obs
         self.include_abs_pos = obs_normalization.get("include_abs_pos", True)
+        # How to include target_qpos: True, False, or "relative" (target_qpos - qpos)
+        self.include_target_qpos = obs_normalization.get("include_target_qpos", True)
+        # Action bounds for relative target_qpos normalization (synced from control config)
+        # Format: dict with joint names as keys (e.g., {"shoulder_pan": 0.044, ...})
+        self.obs_action_bounds = obs_normalization.get("action_bounds", None)
         # Position normalization params: (pos - mean) / std
         self.tcp_pos_norm = obs_normalization.get("tcp_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
         self.red_cube_pos_norm = obs_normalization.get("red_cube_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
@@ -526,13 +531,39 @@ class Track1Env(BaseEnv):
             for agent_key in obs["agent"]:
                 agent_obs = obs["agent"][agent_key]
                 
-                # qpos: divide by π → approximately [-1, 1] for typical joint ranges
-                if "qpos" in agent_obs:
-                    agent_obs["qpos"] = agent_obs["qpos"] / np.pi
+                # Get raw qpos for potential relative calculation
+                raw_qpos = agent_obs.get("qpos", None)
                 
-                # target_qpos: divide by π
+                # qpos: divide by π → approximately [-1, 1] for typical joint ranges
+                if raw_qpos is not None:
+                    agent_obs["qpos"] = raw_qpos / np.pi
+                
+                # target_qpos handling based on include_target_qpos setting
                 if "controller" in agent_obs and "target_qpos" in agent_obs["controller"]:
-                    agent_obs["controller"]["target_qpos"] = agent_obs["controller"]["target_qpos"] / np.pi
+                    target_qpos = agent_obs["controller"]["target_qpos"]
+                    
+                    if self.include_target_qpos == "relative" and raw_qpos is not None:
+                        # Replace with tracking error: (target_qpos - qpos) / action_bounds
+                        tracking_error = target_qpos - raw_qpos
+                        
+                        # Normalize by action bounds if available, otherwise fall back to π
+                        if self.obs_action_bounds is not None:
+                            # Convert dict to tensor in joint order
+                            joint_order = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+                            bounds_list = [self.obs_action_bounds.get(j, 0.1) for j in joint_order]
+                            bounds = torch.tensor(bounds_list, device=self.device)
+                            agent_obs["controller"]["target_qpos"] = tracking_error / bounds
+                        else:
+                            agent_obs["controller"]["target_qpos"] = tracking_error / np.pi
+                    elif self.include_target_qpos:
+                        # Include normalized target_qpos
+                        agent_obs["controller"]["target_qpos"] = target_qpos / np.pi
+                    else:
+                        # Exclude target_qpos entirely
+                        del agent_obs["controller"]["target_qpos"]
+                        # Remove empty controller dict
+                        if not agent_obs["controller"]:
+                            del agent_obs["controller"]
                 
                 # qvel: clip and normalize
                 if "qvel" in agent_obs:

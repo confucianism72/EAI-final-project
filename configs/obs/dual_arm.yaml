@@ -4,8 +4,7 @@
 enabled: true
 
 # Per-joint qvel clip ranges (rad/s) - 99th percentile × 1.2 buffer
-# Format: [left_shoulder_pan, left_shoulder_lift, left_elbow_flex, left_wrist_flex, left_wrist_roll, left_gripper,
-#          right_shoulder_pan, right_shoulder_lift, right_elbow_flex, right_wrist_flex, right_wrist_roll, right_gripper]
+# Format: [left_6_joints, right_6_joints]
 qvel_clip: [2.0, 3.7, 3.7, 1.7, 1.0, 2.0, 2.0, 3.7, 3.5, 1.7, 0.7, 2.1]
 
 # Relative position (tcp_to_red_pos) clip range in meters
@@ -14,8 +13,16 @@ relative_pos_clip: 0.5
 # Whether to include absolute positions in obs
 include_abs_pos: true
 
+# How to include target_qpos in agent obs:
+# - true: include target_qpos (normalized by π)
+# - false: exclude target_qpos entirely  
+# - "relative": include (target_qpos - qpos) / action_bounds (tracking error in action scale)
+include_target_qpos: "relative"
+
+# Action bounds for target_qpos normalization (synced from control config via Hydra)
+action_bounds: ${control.action_bounds}
+
 # Absolute position normalization: (pos - mean) / std
-# For dual-arm, different TCP locations for left and right
 tcp_pos:
   mean: [0.3, 0.3, 0.2]
   std: [0.1, 0.1, 0.1]
