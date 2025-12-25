@@ -449,6 +449,10 @@ class PPORunner:
         eval_reward_components = {}
         eval_component_count = 0
         
+        # Per-step reward data for CSV export (list of dicts per env)
+        # Structure: {env_idx: [{step, reward, component1, component2, ...}, ...]}
+        step_reward_data = {i: [] for i in range(self.cfg.training.num_eval_envs)}
+        
         # Compute max_steps consistently: (base * multiplier) + hold_steps
         base = self.cfg.env.episode_steps.get("base", 296)
         multiplier = self.cfg.env.episode_steps.get("multiplier", 1.2)
@@ -475,6 +479,17 @@ class PPORunner:
                 for k, v in eval_infos["reward_components"].items():
                     eval_reward_components[k] = eval_reward_components.get(k, 0) + v
                 eval_component_count += 1
+                
+                # Collect per-step data for CSV export
+                for env_idx in range(self.cfg.training.num_eval_envs):
+                    step_data = {
+                        "step": step,
+                        "reward": reward[env_idx].item(),
+                    }
+                    # Add each reward component
+                    for k, v in eval_infos["reward_components"].items():
+                        step_data[k] = v  # These are already averaged across envs
+                    step_reward_data[env_idx].append(step_data)
             
             # Check for episode completion
             done = terminated | truncated
@@ -522,6 +537,16 @@ class PPORunner:
             # Finalize the evaluation video
             self.eval_envs.call("flush_video", save=True)
             self._async_split_videos()
+            
+            # Save per-step reward data as CSV alongside videos
+            import csv
+            for env_idx, steps in step_reward_data.items():
+                if steps:  # Only save if we have data
+                    csv_path = self.video_dir / f"step_{self.global_step}_env{env_idx}_rewards.csv"
+                    with open(csv_path, 'w', newline='') as f:
+                        writer = csv.DictWriter(f, fieldnames=steps[0].keys())
+                        writer.writeheader()
+                        writer.writerows(steps)
 
     def _save_checkpoint(self, iteration):
         """Save model checkpoint."""
