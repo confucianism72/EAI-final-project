@@ -20,6 +20,10 @@ weights:
 approach_threshold: 0.01     # Distance for full reward (1cm)
 approach_zero_point: 0.20    # Distance where reward becomes 0 (20cm)
 
+# Horizontal displacement threshold: only penalize displacement > threshold
+# penalty = max(0, displacement - threshold) * weight
+horizontal_displacement_threshold: 0.01  # 1cm tolerance for small movements
+
 # Gripper reference point offsets (in meters)
 # The reference point is where the cube center should be when properly grasped
 gripper_tip_offset: 0.015    # Along jaw: back from tip (1.5cm)
@@ -38,7 +42,7 @@ lift_max_height: 0.10        # Cap lift reward at 10cm (no reward increase above
 
 # Success condition: cube must stay >= lift_target for stable_hold_time seconds
 lift_target: 0.05           # Height threshold (5cm)
-stable_hold_time: 10.0      # Required hold time in seconds (at 30Hz = 300 steps)
+stable_hold_time: 3.0      # Required hold time in seconds (at 30Hz = 30 steps per second)
 
 # Fail condition: cube XY must stay within this rectangle (meters)
 # If cube goes outside, episode terminates with fail penalty

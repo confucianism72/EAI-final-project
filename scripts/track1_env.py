@@ -191,6 +191,9 @@ class Track1Env(BaseEnv):
         # Action rate penalty (anti-jitter)
         self.reward_weights["action_rate"] = weights.get("action_rate", 0.0)
         self.prev_action = None  # Will be initialized on first step
+        
+        # Horizontal displacement threshold: only penalize moves > threshold
+        self.horizontal_displacement_threshold = reward_config.get("horizontal_displacement_threshold", 0.0)
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1512,8 +1515,11 @@ class Track1Env(BaseEnv):
         
         # 3. Horizontal displacement: cube XY displacement from initial position (positive value)
         # initial_cube_xy is set during episode initialization
+        # Only penalize displacement beyond threshold (allows small movements during grasping)
         if hasattr(self, 'initial_cube_xy'):
-            horizontal_displacement = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
+            raw_displacement = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
+            threshold = self.horizontal_displacement_threshold
+            horizontal_displacement = torch.clamp(raw_displacement - threshold, min=0.0)
         else:
             horizontal_displacement = torch.zeros(self.num_envs, device=self.device)
         
