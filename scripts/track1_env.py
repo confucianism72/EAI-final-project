@@ -581,11 +581,16 @@ class Track1Env(BaseEnv):
         """
         obs = dict()
         
-        # Helper for position normalization: (pos - mean) / std
+        # Helper for position normalization: (pos - mean) / std with optional clipping
         def normalize_pos(pos, norm_config):
             mean = torch.tensor(norm_config["mean"], device=self.device)
             std = torch.tensor(norm_config["std"], device=self.device)
-            return (pos - mean) / std
+            normalized = (pos - mean) / std
+            # Optional clipping to ±clip_with_std
+            clip_std = norm_config.get("clip_with_std", None)
+            if clip_std is not None:
+                normalized = torch.clamp(normalized, -clip_std, clip_std)
+            return normalized
         
         # 1. Object State
         red_cube_pos = self.red_cube.pose.p
@@ -615,18 +620,31 @@ class Track1Env(BaseEnv):
                 red_to_green = torch.clamp(red_to_green, -clip_val, clip_val) / clip_val
             obs["red_to_green_pos"] = red_to_green
         
-        # 4. Absolute positions (optional, controlled by include_abs_pos)
-        if self.include_abs_pos:
+        # 4. Absolute positions (controlled by include_abs_pos: list, bool, or false)
+        # Convert to list for uniform handling
+        abs_pos_list = self.include_abs_pos
+        if abs_pos_list is True:
+            abs_pos_list = ["tcp_pos", "red_cube_pos", "green_cube_pos"]
+        elif abs_pos_list is False or abs_pos_list is None:
+            abs_pos_list = []
+        
+        if "tcp_pos" in abs_pos_list:
             if self.obs_normalize_enabled:
                 obs["tcp_pos"] = normalize_pos(tcp_pos, self.tcp_pos_norm)
-                obs["red_cube_pos"] = normalize_pos(red_cube_pos, self.red_cube_pos_norm)
-                if green_cube_pos is not None:
-                    obs["green_cube_pos"] = normalize_pos(green_cube_pos, self.green_cube_pos_norm)
             else:
                 obs["tcp_pos"] = tcp_pos
+                
+        if "red_cube_pos" in abs_pos_list:
+            if self.obs_normalize_enabled:
+                obs["red_cube_pos"] = normalize_pos(red_cube_pos, self.red_cube_pos_norm)
+            else:
                 obs["red_cube_pos"] = red_cube_pos
-                if green_cube_pos is not None:
-                    obs["green_cube_pos"] = green_cube_pos
+                
+        if "green_cube_pos" in abs_pos_list and green_cube_pos is not None:
+            if self.obs_normalize_enabled:
+                obs["green_cube_pos"] = normalize_pos(green_cube_pos, self.green_cube_pos_norm)
+            else:
+                obs["green_cube_pos"] = green_cube_pos
             
         return obs
 
