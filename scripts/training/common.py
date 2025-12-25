@@ -239,12 +239,15 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     
     # Video Recording (only for eval envs with capture_video enabled)
     if for_eval and video_dir and cfg.capture_video:
-        max_video_steps = int(cfg.env.episode_steps.base * cfg.env.episode_steps.multiplier)
+        # For evaluation, we want manual control over video saving in runner.py
+        # because we use ignore_terminations=True. We set max_steps_per_video 
+        # to a very large value to disable automatic flushing on steps.
         env = RecordEpisode(
             env,
             output_dir=video_dir,
             save_trajectory=False,
-            max_steps_per_video=max_video_steps,
+            save_on_reset=False,  # Disable automatic save on reset
+            max_steps_per_video=int(1e6), # Effectively disable automatic flush on steps
             video_fps=30,
             info_on_video=False,  # Disabled: crashes with rgb_array render mode
         )

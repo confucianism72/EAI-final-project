@@ -413,12 +413,9 @@ class PPORunner:
         """Run evaluation episodes."""
         print("Running evaluation...")
         
-        # Close old eval envs to reset video recorder
-        if hasattr(self, "eval_envs") and self.eval_envs is not None:
-            self.eval_envs.close()
-        
-        # Recreate eval envs
-        self.eval_envs = make_env(self.cfg, self.cfg.training.num_eval_envs, for_eval=True, video_dir=self.video_dir)
+        # Optimization: Instead of recreating env, flush the video wrapper state
+        # directly in the existing eval_envs. save=False ignores pre-eval trash.
+        self.eval_envs.call("flush_video", save=False)
         
         eval_obs, _ = self.eval_envs.reset()
         eval_returns = []
@@ -429,7 +426,7 @@ class PPORunner:
         eval_reward_components = {}
         eval_component_count = 0
         
-        # Compute max_steps for the evaluation loop
+        # Compute max_steps consistently: (base * multiplier) + hold_steps
         base = self.cfg.env.episode_steps.get("base", 296)
         multiplier = self.cfg.env.episode_steps.get("multiplier", 1.2)
         hold_steps = 0
@@ -440,7 +437,7 @@ class PPORunner:
         eval_multiplier = self.cfg.training.get("eval_step_multiplier", 1.0)
         max_steps = int(training_steps * eval_multiplier)
         
-        # Add a small buffer to ensure we hit truncation if it happens at exactly max_steps
+        # Add a small buffer for safety
         max_steps += 2
         
         for step in range(max_steps):
@@ -491,8 +488,9 @@ class PPORunner:
             if self.cfg.wandb.enabled:
                 wandb.log(eval_logs, step=self.global_step)
         
-        # Async split videos if video recording is enabled
         if self.video_dir is not None:
+            # Finalize the evaluation video
+            self.eval_envs.call("flush_video", save=True)
             self._async_split_videos()
 
     def _save_checkpoint(self, iteration):
