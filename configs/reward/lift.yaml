@@ -23,6 +23,10 @@ approach_zero_point: 0.20    # Distance where reward becomes 0 (20cm)
 gripper_tip_offset: 0.015    # Along jaw: back from tip (1.5cm)
 gripper_outward_offset: 0.015  # Perpendicular: outward for cube (1.5cm)
 
+# Lift reward height range (meters)
+# lift_reward = clamp(height, 0, lift_max_height) * weight
+lift_max_height: 0.10        # Cap lift reward at 10cm (no reward increase above this)
+
 # Success condition: cube must stay >= lift_target for stable_hold_time seconds
 lift_target: 0.05           # Height threshold (5cm)
 stable_hold_time: 10.0      # Required hold time in seconds (at 30Hz = 300 steps)

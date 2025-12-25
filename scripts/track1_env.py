@@ -148,6 +148,7 @@ class Track1Env(BaseEnv):
         
         # Lift success config: cube must stay above lift_target for stable_hold_time
         self.lift_target = reward_config.get("lift_target", 0.05)  # 5cm default
+        self.lift_max_height = reward_config.get("lift_max_height", None)  # Cap for lift reward (None = no cap)
         self.stable_hold_time = reward_config.get("stable_hold_time", 0.0)  # 0 = instant success
         # Convert hold time to steps (at control_freq, default 30 Hz)
         control_freq = getattr(self, 'control_freq', 30)
@@ -1404,8 +1405,11 @@ class Track1Env(BaseEnv):
         else:
             horizontal_displacement = torch.zeros(self.num_envs, device=self.device)
         
-        # 3. Lift reward: height of cube
-        lift_reward = torch.clamp(cube_height, min=0.0)
+        # 3. Lift reward: height of cube (capped at lift_max_height if set)
+        if self.lift_max_height is not None:
+            lift_reward = torch.clamp(cube_height, min=0.0, max=self.lift_max_height)
+        else:
+            lift_reward = torch.clamp(cube_height, min=0.0)
         
         # 4. Success bonus: cube lifted above threshold for stable_hold_time
         success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
