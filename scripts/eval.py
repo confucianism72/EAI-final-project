@@ -231,31 +231,15 @@ class EvalRunner:
         
         Same logic as PPORunner._async_split_videos but runs synchronously.
         """
-        import subprocess
+        from scripts.utils.split_video import split_videos_in_dir
         
-        video_dir = Path(self.video_dir)
-        if not video_dir.exists():
-            return
-        
-        # Find mp4 files
-        mp4_files = list(video_dir.glob("*.mp4"))
-        if not mp4_files:
-            return
-        
-        print("Splitting videos into individual env videos...")
-        
-        # Run split_video.py
-        cmd = [
-            sys.executable, "scripts/utils/split_video.py",
-            str(video_dir),
-            "--num_envs", str(self.cfg.training.num_eval_envs),
-        ]
-        
-        try:
-            subprocess.run(cmd, check=True)
-            print("Video splitting complete!")
-        except subprocess.CalledProcessError as e:
-            print(f"Warning: Video splitting failed: {e}")
+        count = split_videos_in_dir(
+            str(self.video_dir),
+            self.cfg.training.num_eval_envs,
+            rgb_only=True
+        )
+        if count > 0:
+            print(f"Split {count} video(s) into individual env videos")
 
 
 if __name__ == "__main__":

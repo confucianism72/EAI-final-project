@@ -131,6 +131,44 @@ def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx:
     return output_paths
 
 
+def split_videos_in_dir(video_dir: str, num_envs: int, rgb_only: bool = True, cameras: int = 2):
+    """Split all tiled videos in a directory into individual env videos.
+    
+    This is the main function to import for batch processing.
+    
+    Args:
+        video_dir: Directory containing mp4 files to split
+        num_envs: Number of parallel environments
+        rgb_only: Only extract RGB (top half), default True
+        cameras: Number of cameras per env
+    
+    Returns:
+        Number of videos processed
+    """
+    video_dir = Path(video_dir)
+    if not video_dir.exists():
+        return 0
+    
+    # Find mp4 files that haven't been split yet
+    video_files = list(video_dir.glob("*.mp4"))
+    split_dir = video_dir / "split"
+    
+    videos_to_process = []
+    for video_file in video_files:
+        output_folder = split_dir / video_file.stem
+        if not output_folder.exists():
+            videos_to_process.append(video_file)
+    
+    if not videos_to_process:
+        return 0
+    
+    print(f"Splitting {len(videos_to_process)} video(s)...")
+    for video_file in videos_to_process:
+        split_video(str(video_file), num_envs, None, None, rgb_only, cameras)
+    
+    return len(videos_to_process)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Split tiled parallel env videos")
     parser.add_argument("input", type=str, help="Input video file or directory")

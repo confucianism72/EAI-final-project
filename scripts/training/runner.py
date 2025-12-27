@@ -682,29 +682,18 @@ class PPORunner:
 
     def _async_split_videos(self):
         """Asynchronously split tiled eval videos into individual env videos."""
-        import subprocess
+        from scripts.utils.split_video import split_videos_in_dir
         
-        video_dir = Path(self.video_dir)
-        if not video_dir.exists():
+        if not self.video_dir:
             return
         
-        # Find any mp4 files that haven't been split yet
-        mp4_files = list(video_dir.glob("*.mp4"))
-        if not mp4_files:
-            return
+        # Run in background thread (non-blocking)
+        def split_task():
+            split_videos_in_dir(
+                self.video_dir,
+                self.cfg.training.num_eval_envs,
+                rgb_only=True
+            )
         
-        # Spawn background process to split videos
-        # Uses the split_video.py script with --rgb_only flag
-        cmd = [
-            sys.executable, "scripts/utils/split_video.py",
-            str(video_dir),
-            "--num_envs", str(self.cfg.training.num_eval_envs),
-        ]
-        
-        # Run in background (non-blocking)
-        subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True  # Detach from parent process
-        )
+        thread = threading.Thread(target=split_task, daemon=True)
+        thread.start()
