@@ -202,6 +202,12 @@ class Track1Env(BaseEnv):
         # Grasp detection parameters (for is_grasping)
         self.grasp_min_force = reward_config.get("grasp_min_force", 0.5)
         self.grasp_max_angle = reward_config.get("grasp_max_angle", 110)
+        
+        # Grasp reward weight
+        self.reward_weights["grasp"] = weights.get("grasp", 0.0)
+        
+        # Gated lift reward: only give lift reward when is_grasped=True
+        self.gate_lift_with_grasp = reward_config.get("gate_lift_with_grasp", False)
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1588,11 +1594,33 @@ class Track1Env(BaseEnv):
         fail = info.get("fail", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         fail_penalty = fail.float()
         
+        # 8. Grasp reward: bonus for successfully grasping the cube
+        # Get the right arm agent
+        if hasattr(self, 'single_arm_mode') and self.single_arm_mode:
+            agent = self.agent.agents["so101-1"]
+        else:
+            agent = self.agent if not hasattr(self.agent, 'agents') else self.agent.agents.get("so101-1", self.agent)
+        
+        is_grasped = agent.is_grasping(
+            self.red_cube,
+            min_force=self.grasp_min_force,
+            max_angle=self.grasp_max_angle
+        )
+        grasp_reward = is_grasped.float()  # 0 or 1
+        
+        # 9. Apply gated lift reward if configured
+        # Only give lift reward when grasping the cube
+        if self.gate_lift_with_grasp:
+            effective_lift_reward = lift_reward * is_grasped.float()
+        else:
+            effective_lift_reward = lift_reward
+        
         # Weighted sum (use negative weights for penalties)
         reward = (w["approach"] * approach_reward +
                   w.get("approach2", 0.0) * approach2_reward +
+                  w.get("grasp", 0.0) * grasp_reward +
                   w["horizontal_displacement"] * horizontal_displacement +
-                  w["lift"] * lift_reward + 
+                  w["lift"] * effective_lift_reward + 
                   w.get("action_rate", 0.0) * action_rate +
                   w["success"] * success_bonus +
                   w["fail"] * fail_penalty)
@@ -1603,13 +1631,15 @@ class Track1Env(BaseEnv):
         info["reward_components"] = {
             "approach": (w["approach"] * approach_reward).mean().item(),
             "approach2": (w.get("approach2", 0.0) * approach2_reward).mean().item(),
+            "grasp": (w.get("grasp", 0.0) * grasp_reward).mean().item(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean().item(),
-            "lift": (w["lift"] * lift_reward).mean().item(),
+            "lift": (w["lift"] * effective_lift_reward).mean().item(),
             "action_rate": (w.get("action_rate", 0.0) * action_rate).mean().item(),
         }
-        # Track success/fail counts separately (not averaged)
+        # Track success/fail/grasp counts separately (not averaged)
         info["success_count"] = success.sum().item()
         info["fail_count"] = fail.sum().item()
+        info["grasp_count"] = is_grasped.sum().item()
         
         return reward
 

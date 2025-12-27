@@ -8,11 +8,16 @@ reward_type: "parallel"
 weights:
   approach: 2.0        # Approach cube (fixed jaw reference point → cube center)
   approach2: 2.0       # Approach cube (moving jaw reference point → cube center)
+  grasp: 1.0           # Bonus for successfully grasping the cube (binary)
   horizontal_displacement: -25.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
   action_rate: -1.0    # Penalize action changes (anti-jitter), range ~[0, 0.2]
   success: 100.0        # Task completion bonus
   fail: -100.0         # Penalty when cube goes out of bounds
+
+# Gated lift reward: only give lift reward when is_grasped=True
+# This prevents the agent from pushing the cube up without grasping it
+gate_lift_with_grasp: true
 
 # Fixed jaw approach reward curve (piecewise linear)
 # reward = 1.0 if distance < threshold
