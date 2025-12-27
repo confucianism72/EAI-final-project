@@ -33,7 +33,7 @@ training:
 
 # PPO hyperparameters
 ppo:
-  learning_rate: 3e-4
+  learning_rate: 1e-4
   gamma: 0.99
   gae_lambda: 0.95
   num_minibatches: 32
@@ -44,7 +44,7 @@ ppo:
   ent_coef: 0.005
   vf_coef: 0.5
   max_grad_norm: 0.5
-  target_kl: 0.2
+  target_kl: 0.015      # Reduced from 0.2 to prevent policy collapse (Standard PPO: 0.01-0.02)
   reward_scale: 1.0
   handle_timeout_termination: true  # If true, bootstrap on truncation (recommended)
   logstd_init: -1.0      # Initial log standard deviation (e.g. 0.0 = std 1.0, -0.5 = std 0.6)

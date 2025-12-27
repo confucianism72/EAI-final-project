@@ -475,10 +475,13 @@ class PPORunner:
             # Environment Step
             next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action)
             
-            # Apply running reward normalization BEFORE storing
-            # Note: We normalize using `next_done` since that's when episodes end
-            reward = self._normalize_reward(reward, next_done)
-            storage["rewards"][step] = reward
+            # 1. Apply running reward normalization for TRAINING storage
+            # We use a separate variable for storage to preserve the raw reward for logging
+            normalized_reward = self._normalize_reward(reward, next_done)
+            storage["rewards"][step] = normalized_reward
+            
+            # 2. Accumulate RAW reward for logging (so charts show real progress)
+            self.episode_returns += reward
             
             # Accumulate reward components for logging (mean over entire rollout)
             # On auto_reset, ManiSkillVectorEnv moves original info to 'final_info'
