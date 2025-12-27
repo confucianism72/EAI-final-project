@@ -156,15 +156,24 @@ class PPORunner:
             # Traverse wrappers to find the original Dict observation space
             curr_env = self.envs
             original_space = None
-            # ManiSkillVectorEnv -> RecordEpisode -> FlattenStateWrapper -> Track1Env
-            # We want to find the space before FlattenStateWrapper
-            while True:
-                if hasattr(curr_env, "single_observation_space") and isinstance(curr_env.single_observation_space, gym.spaces.Dict):
-                    original_space = curr_env.single_observation_space
-                    break
-                if not hasattr(curr_env, "env"):
-                    break
-                curr_env = curr_env.env
+            
+            # First, check if the unwrapped env provides a specific structure method (Track1Env case)
+            if hasattr(curr_env, "unwrapped") and hasattr(curr_env.unwrapped, "get_obs_structure"):
+                original_space = curr_env.unwrapped.get_obs_structure()
+            # fallback: look for single_observation_space that is a Dict
+            elif hasattr(curr_env, "unwrapped") and hasattr(curr_env.unwrapped, "single_observation_space") and isinstance(curr_env.unwrapped.single_observation_space, gym.spaces.Dict):
+                original_space = curr_env.unwrapped.single_observation_space
+            elif hasattr(curr_env, "single_observation_space") and isinstance(curr_env.single_observation_space, gym.spaces.Dict):
+                original_space = curr_env.single_observation_space
+            else:
+                # Fallback to traversing wrappers
+                while True:
+                    if hasattr(curr_env, "single_observation_space") and isinstance(curr_env.single_observation_space, gym.spaces.Dict):
+                        original_space = curr_env.single_observation_space
+                        break
+                    if not hasattr(curr_env, "env"):
+                        break
+                    curr_env = curr_env.env
             
             if original_space:
                 self.obs_names, _ = self._get_obs_names(original_space)

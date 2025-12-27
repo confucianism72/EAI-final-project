@@ -3,6 +3,7 @@ import sapien
 import sapien.render
 import torch
 import torch.nn.functional as tFunc
+import gymnasium as gym
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.envs.utils import randomization
 from mani_skill.utils import sapien_utils, common
@@ -69,6 +70,8 @@ class Track1Env(BaseEnv):
         self.include_is_grasped = obs_normalization.get("include_is_grasped", False)
         # Include TCP orientation (quaternion)
         self.include_tcp_orientation = obs_normalization.get("include_tcp_orientation", False)
+        # Include cube displacement from initial position
+        self.include_cube_displacement = obs_normalization.get("include_cube_displacement", False)
 
         self.render_scale = render_scale
         
@@ -107,6 +110,62 @@ class Track1Env(BaseEnv):
 
         self._setup_device()
         self._setup_single_arm_action_space()
+
+    def get_obs_structure(self):
+        """The unbatched, hierarchical observation space for descriptive logging.
+        
+        This method is used ONLY for descriptive logging/naming in the runner.
+        It does not replace the actual observation_space used for neural networks.
+        """
+        spaces = dict()
+        
+        # 1. Agent State (Joint positions and velocities)
+        agent_spaces = dict()
+        for agent in self.agent.agents:
+            if self.single_arm_mode and agent.uid == "so101-0":
+                 continue
+            agent_spaces[agent.uid] = gym.spaces.Dict({
+                "qpos": gym.spaces.Box(-np.inf, np.inf, (6,), np.float32),
+                "qvel": gym.spaces.Box(-np.inf, np.inf, (6,), np.float32),
+            })
+        spaces["agent"] = gym.spaces.Dict(agent_spaces)
+        
+        # 2. Extra State
+        extra_spaces = dict()
+        extra_spaces["red_cube_rot"] = gym.spaces.Box(-np.inf, np.inf, (4,), np.float32)
+        if self.include_cube_displacement:
+            extra_spaces["red_cube_displacement"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
+            
+        if self.green_cube is not None:
+            extra_spaces["green_cube_rot"] = gym.spaces.Box(-np.inf, np.inf, (4,), np.float32)
+            if self.include_cube_displacement:
+                 extra_spaces["green_cube_displacement"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
+        
+        if self.include_is_grasped:
+            extra_spaces["is_grasped"] = gym.spaces.Box(-1, 1, (1,), np.float32)
+        if self.include_tcp_orientation:
+            extra_spaces["tcp_orientation"] = gym.spaces.Box(-np.inf, np.inf, (4,), np.float32)
+            
+        extra_spaces["tcp_to_red_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
+        if self.task == "stack":
+            extra_spaces["red_to_green_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
+            
+        # Absolute positions
+        abs_pos_list = self.include_abs_pos
+        if abs_pos_list is True:
+            abs_pos_list = ["tcp_pos", "red_cube_pos", "green_cube_pos"]
+        elif abs_pos_list in [False, None]:
+            abs_pos_list = []
+            
+        if "tcp_pos" in abs_pos_list:
+            extra_spaces["tcp_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
+        if "red_cube_pos" in abs_pos_list:
+            extra_spaces["red_cube_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
+        if "green_cube_pos" in abs_pos_list and self.green_cube is not None:
+            extra_spaces["green_cube_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
+            
+        spaces["extra"] = gym.spaces.Dict(extra_spaces)
+        return gym.spaces.Dict(spaces)
         
     def _setup_reward_config(self, reward_config):
         """Setup reward configuration with defaults."""
@@ -668,10 +727,24 @@ class Track1Env(BaseEnv):
         red_cube_pos = self.red_cube.pose.p
         obs["red_cube_rot"] = self.red_cube.pose.q
         
+        # 1a. Cube Displacement (Relative to initial spawn position)
+        if self.include_cube_displacement and hasattr(self, "initial_red_cube_pos"):
+            red_disp = red_cube_pos - self.initial_red_cube_pos
+            if self.obs_normalize_enabled:
+                # Use relative_pos_clip for displacement as well
+                red_disp = torch.clamp(red_disp, -self.relative_pos_clip, self.relative_pos_clip) / self.relative_pos_clip
+            obs["red_cube_displacement"] = red_disp
+        
         green_cube_pos = None
         if self.green_cube is not None:
             green_cube_pos = self.green_cube.pose.p
             obs["green_cube_rot"] = self.green_cube.pose.q
+            
+            if self.include_cube_displacement and hasattr(self, "initial_green_cube_pos"):
+                green_disp = green_cube_pos - self.initial_green_cube_pos
+                if self.obs_normalize_enabled:
+                    green_disp = torch.clamp(green_disp, -self.relative_pos_clip, self.relative_pos_clip) / self.relative_pos_clip
+                obs["green_cube_displacement"] = green_disp
 
         # 2. End-Effector (TCP) State (Right Arm) - using agent.tcp_pos (fingertip midpoint)
         agent = self.right_arm
@@ -1205,6 +1278,11 @@ class Track1Env(BaseEnv):
                 red_pos = self._random_grid_position(b, spawn_grid, z=0.015)
                 self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
                 
+                # Store initial cube full pos for displacement observation
+                if not hasattr(self, "initial_red_cube_pos"):
+                    self.initial_red_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
+                self.initial_red_cube_pos[env_idx] = red_pos
+                
                 # Store initial cube XY for horizontal penalty in reward
                 if not hasattr(self, 'initial_cube_xy'):
                     self.initial_cube_xy = torch.zeros(self.num_envs, 2, device=self.device)
@@ -1236,12 +1314,30 @@ class Track1Env(BaseEnv):
                 self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
                 self.green_cube.set_pose(Pose.create_from_pq(p=green_pos))
                 
+                # Store initial cube full poses
+                if not hasattr(self, "initial_red_cube_pos"):
+                    self.initial_red_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
+                if not hasattr(self, "initial_green_cube_pos"):
+                    self.initial_green_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
+                
+                self.initial_red_cube_pos[env_idx] = red_pos
+                self.initial_green_cube_pos[env_idx] = green_pos
+                
             elif self.task == "sort":
                 # Both cubes in Mid Grid
                 red_pos = self._random_grid_position(b, self.grid_bounds["mid"], z=0.015)
                 green_pos = self._random_grid_position(b, self.grid_bounds["mid"], z=0.005)  # Smaller green cube
                 self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
                 self.green_cube.set_pose(Pose.create_from_pq(p=green_pos))
+                
+                # Store initial cube full poses
+                if not hasattr(self, "initial_red_cube_pos"):
+                    self.initial_red_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
+                if not hasattr(self, "initial_green_cube_pos"):
+                    self.initial_green_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
+                
+                self.initial_red_cube_pos[env_idx] = red_pos
+                self.initial_green_cube_pos[env_idx] = green_pos
 
     def _initialize_robot_poses(self, batch_size: int, env_idx: torch.Tensor):
         """Initialize robot poses with zero + small noise.

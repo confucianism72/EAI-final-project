@@ -47,3 +47,6 @@ include_is_grasped: true
 
 # Include TCP orientation (quaternion, 4 values) in observations
 include_tcp_orientation: true
+
+# Include cube displacement relative to initial position
+include_cube_displacement: true
