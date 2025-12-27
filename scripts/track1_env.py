@@ -1277,51 +1277,14 @@ class Track1Env(BaseEnv):
         return torch.stack([x, y, z_tensor], dim=1)
 
     def evaluate(self):
-        """Evaluate success based on task."""
-        # Common failure check: objects falling off table (z < -0.05)
-        # Note: Table surface is at 0.0.
-        fallen_threshold = -0.05
-        red_fallen = self.red_cube.pose.p[:, 2] < fallen_threshold
-        
-        result = {}
-        
+        """Evaluate success/fail based on task."""
         if self.task == "lift":
-            result = self._evaluate_lift()
-            # Mark fail if fallen
-            result["fail"] = red_fallen
-            
-            # Check if cube is out of bounds (XY)
-            if self.fail_bounds is not None:
-                red_pos = self.red_cube.pose.p
-                out_of_bounds = (
-                    (red_pos[:, 0] < self.fail_bounds["x_min"]) |
-                    (red_pos[:, 0] > self.fail_bounds["x_max"]) |
-                    (red_pos[:, 1] < self.fail_bounds["y_min"]) |
-                    (red_pos[:, 1] > self.fail_bounds["y_max"])
-                )
-                result["out_of_bounds"] = out_of_bounds
-                result["fail"] = result["fail"] | out_of_bounds
-            
-            # Ensure success is False if failed
-            result["success"] = result["success"] & (~result["fail"])
-            
+            return self._evaluate_lift()
         elif self.task == "stack":
-            green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
-            is_fallen = red_fallen | green_fallen
-            
-            result = self._evaluate_stack()
-            result["fail"] = is_fallen
-            result["success"] = result["success"] & (~is_fallen)
-            
+            return self._evaluate_stack()
         elif self.task == "sort":
-            green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
-            is_fallen = red_fallen | green_fallen
-            
-            result = self._evaluate_sort()
-            result["fail"] = is_fallen
-            result["success"] = result["success"] & (~is_fallen)
-            
-        return result
+            return self._evaluate_sort()
+        return {}
 
     def _evaluate_lift(self):
         """Lift: red cube >= lift_target for stable_hold_time seconds.
@@ -1349,8 +1312,31 @@ class Track1Env(BaseEnv):
             
             # Success when counter reaches required hold steps
             success = self.lift_hold_counter >= self.stable_hold_steps
+            
+        # Failure conditions
+        fallen_threshold = -0.05
+        red_fallen = self.red_cube.pose.p[:, 2] < fallen_threshold
+        fail = red_fallen
         
-        return {"success": success, "red_height": red_z, "hold_steps": self.lift_hold_counter if hasattr(self, 'lift_hold_counter') else 0}
+        if self.fail_bounds is not None:
+            red_pos = self.red_cube.pose.p
+            out_of_bounds = (
+                (red_pos[:, 0] < self.fail_bounds["x_min"]) |
+                (red_pos[:, 0] > self.fail_bounds["x_max"]) |
+                (red_pos[:, 1] < self.fail_bounds["y_min"]) |
+                (red_pos[:, 1] > self.fail_bounds["y_max"])
+            )
+            fail = fail | out_of_bounds
+            
+        # Ensure success is False if already failed
+        success = success & (~fail)
+        
+        return {
+            "success": success, 
+            "fail": fail,
+            "red_height": red_z, 
+            "hold_steps": self.lift_hold_counter if hasattr(self, 'lift_hold_counter') else 0
+        }
 
     def _evaluate_stack(self):
         """Stack: red cube on top of green cube, stable on table."""
@@ -1369,7 +1355,21 @@ class Track1Env(BaseEnv):
         xy_ok = xy_dist < 0.015
         
         success = green_on_table & z_ok & xy_ok
-        return {"success": success, "green_on_table": green_on_table, "z_diff": z_diff, "xy_dist": xy_dist}
+        # Failure conditions
+        fallen_threshold = -0.05
+        red_fallen = self.red_cube.pose.p[:, 2] < fallen_threshold
+        green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
+        fail = red_fallen | green_fallen
+        
+        success = success & (~fail)
+        
+        return {
+            "success": success, 
+            "fail": fail,
+            "green_on_table": green_on_table, 
+            "z_diff": z_diff, 
+            "xy_dist": xy_dist
+        }
 
     def _evaluate_sort(self):
         """Sort: green in Left Grid, red in Right Grid."""
@@ -1393,8 +1393,20 @@ class Track1Env(BaseEnv):
         )
         
         success = red_in_right & green_in_left
-        return {"success": success, "red_in_right": red_in_right, "green_in_left": green_in_left}
-
+        # Failure conditions
+        fallen_threshold = -0.05
+        red_fallen = self.red_cube.pose.p[:, 2] < fallen_threshold
+        green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
+        fail = red_fallen | green_fallen
+        
+        success = success & (~fail)
+        
+        return {
+            "success": success, 
+            "fail": fail,
+            "red_in_right": red_in_right, 
+            "green_in_left": green_in_left
+        }
     # ==================== Dense Reward Functions ====================
     
     def compute_dense_reward(self, obs, action, info):

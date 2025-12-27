@@ -41,15 +41,15 @@ ppo:
   clip_coef: 0.2
   clip_vloss: false      # Whether to clip value loss (as per original PPO paper)
   norm_adv: true        # Whether to normalize advantages per minibatch
-  ent_coef: 0.01
+  ent_coef: 0.005
   vf_coef: 0.5
   max_grad_norm: 0.5
   target_kl: 0.2
   reward_scale: 1.0
   handle_timeout_termination: true  # If true, bootstrap on truncation (recommended)
-  logstd_init: -0.5      # Initial log standard deviation (e.g. 0.0 = std 1.0, -0.5 = std 0.6)
+  logstd_init: -1.0      # Initial log standard deviation (e.g. 0.0 = std 1.0, -0.5 = std 0.6)
   logstd_min: -5.0       # Minimum log standard deviation clamp
-  logstd_max: 2.0        # Maximum log standard deviation clamp
+  logstd_max: 0.0        # Maximum log standard deviation clamp
 
 # Model saving
 save_model: true
@@ -57,6 +57,6 @@ capture_video: true
 checkpoint: null
 
 # Debugging/Monitoring
-log_obs_stats: false  # Log mean/std of observation inputs (useful for monitoring normalization)
+log_obs_stats: true  # Log mean/std of observation inputs (useful for monitoring normalization)
 obs_stats_tau: 0.01   # EMA decay rate for obs statistics (higher = faster adaptation)
 async_eval: true      # Run evaluation in background thread (non-blocking)
