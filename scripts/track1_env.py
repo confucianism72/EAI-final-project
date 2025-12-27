@@ -148,9 +148,15 @@ class Track1Env(BaseEnv):
             "grasp": weights.get("grasp", 0.0),
         }
         
-        # Approach reward curve (piecewise linear)
+        # Approach reward curve type: "linear" (piecewise) or "tanh"
+        self.approach_curve = reward_config.get("approach_curve", "linear")
+        
+        # Linear curve parameters
         self.approach_threshold = reward_config.get("approach_threshold", 0.01)  # Full reward within this distance (1cm)
         self.approach_zero_point = reward_config.get("approach_zero_point", 0.20)  # Zero reward at this distance (20cm)
+        
+        # Tanh curve parameters: reward = 1 - tanh(distance / scale)
+        self.approach_tanh_scale = reward_config.get("approach_tanh_scale", 0.05)
         
         # Legacy scaling (kept for backward compatibility, not used with piecewise)
         self.approach_scale = reward_config.get("approach_scale", reward_config.get("reach_scale", 5.0))
@@ -241,6 +247,17 @@ class Track1Env(BaseEnv):
         
         # Gated lift reward: only give lift reward when is_grasped=True
         self.gate_lift_with_grasp = reward_config.get("gate_lift_with_grasp", False)
+        
+        # Adaptive lift weight: scale by inverse success rate (same logic as grasp)
+        # dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
+        adaptive_lift_cfg = reward_config.get("adaptive_lift_weight", {})
+        self.adaptive_lift_enabled = adaptive_lift_cfg.get("enabled", False)
+        self.adaptive_lift_alpha = adaptive_lift_cfg.get("alpha", 0.5)  # Exponent for inverse scaling
+        self.adaptive_lift_eps = adaptive_lift_cfg.get("eps", 0.01)     # Floor for success rate
+        self.adaptive_lift_max = adaptive_lift_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
+        self.adaptive_lift_tau = adaptive_lift_cfg.get("tau", 0.01)     # EMA decay for tracking
+        # EMA of lift success rate (initialized lazily when device is available)
+        self.lift_success_rate = None
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1622,20 +1639,30 @@ class Track1Env(BaseEnv):
         cube_pos = self.red_cube.pose.p
         cube_height = cube_pos[:, 2]
         
-        # Approach reward calculation based on approach_mode
+        # Approach reward calculation based on approach_mode and approach_curve
         threshold = self.approach_threshold
         zero_point = self.approach_zero_point
+        
+        # Helper function to compute approach reward based on curve type
+        def compute_approach_reward(distance, th, zp):
+            if self.approach_curve == "tanh":
+                # Tanh curve: reward = 1 - tanh(distance / scale)
+                # At distance=0: reward=1, as distance increases: reward smoothly decreases
+                return 1.0 - torch.tanh(distance / self.approach_tanh_scale)
+            else:
+                # Linear (piecewise): reward = 1.0 if d<threshold, linear decay to 0 at zero_point
+                return torch.where(
+                    distance < th,
+                    torch.ones_like(distance),
+                    torch.clamp(1.0 - (distance - th) / (zp - th), min=0.0)
+                )
         
         if self.approach_mode == "tcp_midpoint":
             # TCP midpoint mode: single distance from TCP center to cube (like reference implementation)
             tcp_pos = self.right_arm.tcp_pos
             distance = torch.norm(tcp_pos - cube_pos, dim=1)
             
-            approach_reward = torch.where(
-                distance < threshold,
-                torch.ones_like(distance),
-                torch.clamp(1.0 - (distance - threshold) / (zero_point - threshold), min=0.0)
-            )
+            approach_reward = compute_approach_reward(distance, threshold, zero_point)
             # No approach2 in tcp_midpoint mode
             approach2_reward = torch.zeros_like(approach_reward)
         else:
@@ -1644,11 +1671,7 @@ class Track1Env(BaseEnv):
             gripper_pos = self._get_gripper_pos()
             distance = torch.norm(gripper_pos - cube_pos, dim=1)
             
-            approach_reward = torch.where(
-                distance < threshold,
-                torch.ones_like(distance),
-                torch.clamp(1.0 - (distance - threshold) / (zero_point - threshold), min=0.0)
-            )
+            approach_reward = compute_approach_reward(distance, threshold, zero_point)
             
             # 2. Approach2 reward (moving jaw)
             moving_jaw_pos = self._get_moving_jaw_pos()
@@ -1656,11 +1679,7 @@ class Track1Env(BaseEnv):
             threshold2 = self.approach2_threshold
             zero_point2 = self.approach2_zero_point
             
-            approach2_reward = torch.where(
-                distance2 < threshold2,
-                torch.ones_like(distance2),
-                torch.clamp(1.0 - (distance2 - threshold2) / (zero_point2 - threshold2), min=0.0)
-            )
+            approach2_reward = compute_approach_reward(distance2, threshold2, zero_point2)
         
         # 3. Horizontal displacement: cube XY displacement from initial position (positive value)
         # initial_cube_xy is set during episode initialization
@@ -1747,13 +1766,36 @@ class Track1Env(BaseEnv):
         else:
             effective_lift_reward = lift_reward
         
+        # 10. Adaptive lift weight: scale by inverse success rate
+        # "is_lifting" = cube height > some small threshold (e.g., cube is being lifted)
+        # Use lift_reward > 0 as the signal for "is_lifting"
+        is_lifting = (effective_lift_reward > 0).float()
+        
+        if self.adaptive_lift_enabled:
+            # Lazy initialization
+            if self.lift_success_rate is None:
+                self.lift_success_rate = torch.tensor(self.adaptive_lift_eps, device=self.device)
+            
+            # Update EMA of lift success rate
+            batch_lift_rate = is_lifting.mean()
+            self.lift_success_rate = self.lift_success_rate * (1 - self.adaptive_lift_tau) + batch_lift_rate * self.adaptive_lift_tau
+            
+            # Compute dynamic weight: base * (1 / rate)^alpha, capped at max
+            dynamic_lift_weight = w.get("lift", 0.0) * torch.pow(
+                1.0 / (self.lift_success_rate + self.adaptive_lift_eps),
+                self.adaptive_lift_alpha
+            )
+            dynamic_lift_weight = torch.clamp(dynamic_lift_weight, max=self.adaptive_lift_max)
+        else:
+            dynamic_lift_weight = w.get("lift", 0.0)
+        
         # Weighted sum (use negative weights for penalties)
         # In dual_point mode, approach weight is used for both approach and approach2
         reward = (w["approach"] * approach_reward +
                   w["approach"] * approach2_reward +  # Same weight as approach in dual_point mode
                   dynamic_grasp_weight * grasp_reward +
                   w["horizontal_displacement"] * horizontal_displacement +
-                  w["lift"] * effective_lift_reward + 
+                  dynamic_lift_weight * effective_lift_reward + 
                   w.get("action_rate", 0.0) * action_rate +
                   w["success"] * success_bonus +
                   w["fail"] * fail_penalty)
@@ -1764,13 +1806,17 @@ class Track1Env(BaseEnv):
             "approach": (w["approach"] * approach_reward).mean(),
             "grasp": (dynamic_grasp_weight * grasp_reward).mean(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean(),
-            "lift": (w["lift"] * effective_lift_reward).mean(),
+            "lift": (dynamic_lift_weight * effective_lift_reward).mean(),
             "action_rate": (w.get("action_rate", 0.0) * action_rate).mean(),
         }
         # Log adaptive grasp weight metrics if enabled
         if self.adaptive_grasp_enabled:
             info["reward_components"]["grasp_dynamic_weight"] = dynamic_grasp_weight
             info["reward_components"]["grasp_success_rate"] = self.grasp_success_rate
+        # Log adaptive lift weight metrics if enabled
+        if self.adaptive_lift_enabled:
+            info["reward_components"]["lift_dynamic_weight"] = dynamic_lift_weight
+            info["reward_components"]["lift_success_rate"] = self.lift_success_rate
         # Only log approach2 in dual_point mode
         if self.approach_mode == "dual_point":
             info["reward_components"]["approach2"] = (w["approach"] * approach2_reward).mean()

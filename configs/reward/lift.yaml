@@ -8,7 +8,7 @@ reward_type: "parallel"
 weights:
   approach: 20.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
   grasp: 100.0           # Bonus for successfully grasping the cube (binary, base weight if adaptive)
-  horizontal_displacement: -25.0  # Penalize cube XY displacement from initial position
+  horizontal_displacement: -1.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
   action_rate: -1.0    # Penalize action changes (anti-jitter), range ~[0, 0.2]
   success: 100.0        # Task completion bonus
@@ -21,28 +21,44 @@ adaptive_grasp_weight:
   enabled: true         # Enable adaptive weighting
   alpha: 0.5            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
   eps: 0.01             # Floor for success rate to prevent division by zero
-  max_weight: 1000.0    # Cap to prevent weight explosion
+  max_weight: 10000.0    # Cap to prevent weight explosion
   tau: 0.01             # EMA decay rate for tracking success rate
 
 # Gated lift reward: only give lift reward when is_grasped=True
 # This prevents the agent from pushing the cube up without grasping it
 gate_lift_with_grasp: true
 
-# Fixed jaw approach reward curve (piecewise linear)
-# reward = 1.0 if distance < threshold
-# reward = linear decay from 1.0 to 0.0 between threshold and zero_point
-#
+# Adaptive lift weight: dynamically scale lift reward by inverse success rate
+# Formula: dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
+# This boosts rare lift events to provide stronger learning signal
+adaptive_lift_weight:
+  enabled: true         # Enable adaptive weighting
+  alpha: 0.5            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
+  eps: 0.01             # Floor for success rate to prevent division by zero
+  max_weight: 10000.0    # Cap to prevent weight explosion
+  tau: 0.01             # EMA decay rate for tracking success rate
+
+# Approach reward curve configuration
+# approach_curve options:
+#   - "linear": Piecewise linear (1.0 if d<threshold, linear decay to 0 at zero_point)
+#   - "tanh": Smooth tanh curve: reward = 1 - tanh(distance / scale)
+approach_curve: "tanh"
+
 # approach_mode options:
 #   - "tcp_midpoint": Use TCP center (fingertips midpoint) like reference implementation
 #   - "dual_point": Use separate fixed jaw (approach) and moving jaw (approach2) points
 approach_mode: "tcp_midpoint"
 
-approach_threshold: 0.01     # Distance for full reward (1cm)
+# Linear curve parameters
+approach_threshold: 0.005     # Distance for full reward (0.5cm)
 approach_zero_point: 0.20    # Distance where reward becomes 0 (20cm)
+
+# Tanh curve parameters
+approach_tanh_scale: 0.05    # Scale for tanh: smaller = steeper gradient near 0
 
 # Horizontal displacement threshold: only penalize displacement > threshold
 # penalty = max(0, displacement - threshold) * weight
-horizontal_displacement_threshold: 0.01  # 1cm tolerance for small movements
+horizontal_displacement_threshold: 0.1  # 10cm tolerance for small movements
 
 # Gripper reference point offsets (in meters)
 # The reference point is where the cube center should be when properly grasped
