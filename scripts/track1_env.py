@@ -194,6 +194,10 @@ class Track1Env(BaseEnv):
         
         # Horizontal displacement threshold: only penalize moves > threshold
         self.horizontal_displacement_threshold = reward_config.get("horizontal_displacement_threshold", 0.0)
+        
+        # Grasp detection parameters (for is_grasping)
+        self.grasp_min_force = reward_config.get("grasp_min_force", 0.5)
+        self.grasp_max_angle = reward_config.get("grasp_max_angle", 110)
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""

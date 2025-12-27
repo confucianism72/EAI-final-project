@@ -40,6 +40,10 @@ approach2_zero_point: 0.20     # Distance where reward becomes 0 (20cm)
 # lift_reward = clamp(height, 0, lift_max_height) * weight
 lift_max_height: 0.10        # Cap lift reward at 10cm (no reward increase above this)
 
+# Grasp detection parameters (for is_grasping reward gating)
+grasp_min_force: 0.5         # Minimum contact force in Newtons to count as grasping
+grasp_max_angle: 110         # Maximum angle (degrees) between contact force and gripper opening direction
+
 # Success condition: cube must stay >= lift_target for stable_hold_time seconds
 lift_target: 0.05           # Height threshold (5cm)
 stable_hold_time: 3.0      # Required hold time in seconds (at 30Hz = 30 steps per second)
