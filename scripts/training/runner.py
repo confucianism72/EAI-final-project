@@ -166,14 +166,38 @@ class PPORunner:
         self.reward_mode = cfg.reward.get("reward_mode", "sparse")
         self.staged_reward = self.reward_mode == "staged_dense"
         
-        # Get joint names from the environment's controller for robust logging
         if hasattr(self.envs.unwrapped, "agent"):
-            # Joints in the order they appear in the action space
-            self.joint_names = [j.name for j in self.envs.unwrapped.agent.controller.joints]
-            print(f"Dynamic joint names for logging: {self.joint_names}")
+            agent = self.envs.unwrapped.agent
+            if hasattr(agent, "controller"):
+                ctrl = agent.controller
+                if isinstance(ctrl, dict):
+                    # MultiAgent setup: agent.controller is a dict of sub-controllers
+                    all_joint_names = []
+                    for agent_id, sub_ctrl in ctrl.items():
+                        if hasattr(sub_ctrl, "joints"):
+                            all_joint_names.extend([f"{agent_id}/{j.name}" for j in sub_ctrl.joints])
+                    
+                    if len(all_joint_names) == self.n_act:
+                        self.joint_names = all_joint_names
+                    elif self.n_act == 6 and len(all_joint_names) == 12:
+                        # Specific heuristic for Track1Env single-arm tasks (which use so101-1)
+                        if "so101-1" in ctrl:
+                            self.joint_names = [j.name for j in ctrl["so101-1"].joints]
+                        else:
+                            # Fallback to the last agent's joints if n_act matches
+                            last_ctrl = list(ctrl.values())[-1]
+                            self.joint_names = [j.name for j in last_ctrl.joints]
+                    else:
+                        # Fallback to generic names if ambiguous
+                        self.joint_names = [f"act_{i}" for i in range(self.n_act)]
+                elif hasattr(ctrl, "joints"):
+                    self.joint_names = [j.name for j in ctrl.joints]
+                else:
+                    self.joint_names = [f"act_{i}" for i in range(self.n_act)]
+            else:
+                self.joint_names = [f"act_{i}" for i in range(self.n_act)]
         else:
             self.joint_names = [f"act_{i}" for i in range(self.n_act)]
-            print(f"Warning: Could not fetch joint names from env. Using generic names: {self.joint_names}")
         
         # Async eval infrastructure
         self.async_eval = cfg.get("async_eval", True)  # Enable async eval by default
