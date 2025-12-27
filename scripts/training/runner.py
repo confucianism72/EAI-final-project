@@ -65,6 +65,7 @@ class PPORunner:
             output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
             self.video_dir = str(output_dir / "videos")
         self.eval_envs = make_env(cfg, cfg.training.num_eval_envs, for_eval=True, video_dir=self.video_dir)
+        self.eval_count = 0  # Counter for eval runs (eval0, eval1, eval2, ...)
         
         # Determine observation/action dimensions
         obs_space = self.envs.single_observation_space
@@ -538,17 +539,22 @@ class PPORunner:
             self.eval_envs.call("flush_video", save=True)
             self._async_split_videos()
             
-            # Save per-step reward data as CSV alongside videos
+            # Save per-step reward data as CSV in eval-specific subfolder
             import csv
             from pathlib import Path
             video_dir_path = Path(self.video_dir)
+            eval_subfolder = video_dir_path / f"eval{self.eval_count}"
+            eval_subfolder.mkdir(exist_ok=True)
+            
             for env_idx, steps in step_reward_data.items():
                 if steps:  # Only save if we have data
-                    csv_path = video_dir_path / f"step_{self.global_step}_env{env_idx}_rewards.csv"
+                    csv_path = eval_subfolder / f"env{env_idx}_rewards.csv"
                     with open(csv_path, 'w', newline='') as f:
                         writer = csv.DictWriter(f, fieldnames=steps[0].keys())
                         writer.writeheader()
                         writer.writerows(steps)
+            
+            self.eval_count += 1  # Increment for next eval
 
     def _save_checkpoint(self, iteration):
         """Save model checkpoint."""
