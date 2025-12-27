@@ -143,6 +143,18 @@ class PPORunner:
         # Handle timeout termination (if True, truncated episodes bootstrap)
         self.handle_timeout_termination = cfg.ppo.get("handle_timeout_termination", True)
         
+        # Running Reward Normalization (like gym.wrappers.NormalizeReward, but GPU-compatible)
+        # Normalizes rewards by dividing by sqrt(running_var(discounted_returns))
+        self.normalize_reward = cfg.get("normalize_reward", False)
+        if self.normalize_reward:
+            # Per-environment running return for variance estimation
+            self.return_rms_mean = torch.zeros(1, device=self.device)  # Not used for normalization, just tracking
+            self.return_rms_var = torch.ones(1, device=self.device)
+            self.return_rms_count = torch.tensor(1e-4, device=self.device)  # Small epsilon to avoid div by zero
+            self.running_return = torch.zeros(self.num_envs, device=self.device)  # Per-env discounted return accumulator
+            self.reward_clip = cfg.get("reward_clip", 10.0)  # Clip normalized rewards to [-clip, clip]
+            print(f"Running Reward Normalization enabled (gamma={cfg.ppo.gamma}, clip={self.reward_clip})")
+        
         # Observation statistics logging and normalization
         self.log_obs_stats = cfg.get("log_obs_stats", False)
         self.normalize_obs = cfg.get("normalize_obs", False)
@@ -346,6 +358,58 @@ class PPORunner:
         # Optional: Clip to avoid extreme values (as in common.NormalizeObservationGPU)
         return torch.clamp(normalized, -10.0, 10.0)
 
+    def _normalize_reward(self, reward, done):
+        """Apply running reward normalization (like gym.wrappers.NormalizeReward).
+        
+        Updates running return statistics and normalizes rewards by sqrt(variance_of_returns).
+        This is based on OpenAI's VecNormalize which normalizes by the standard deviation
+        of a rolling discounted return, NOT the mean (which would make rewards go to zero).
+        
+        Args:
+            reward: [num_envs] reward tensor from current step
+            done: [num_envs] done mask (True where episode ended)
+        
+        Returns:
+            Normalized and clipped reward tensor
+        """
+        if not self.normalize_reward:
+            return reward
+        
+        gamma = self.cfg.ppo.gamma
+        
+        # Update running discounted return per environment
+        # This accumulates gamma * running_return + reward for each env
+        self.running_return = self.running_return * gamma + reward
+        
+        # Update running mean/var statistics using Welford's online algorithm
+        # This is equivalent to what VecNormalize does
+        batch_mean = self.running_return.mean()
+        batch_var = self.running_return.var()
+        batch_count = self.running_return.shape[0]
+        
+        # Parallel algorithm for combining statistics (Chan et al.)
+        delta = batch_mean - self.return_rms_mean
+        total_count = self.return_rms_count + batch_count
+        
+        # Update mean (not used for normalization, but good for monitoring)
+        self.return_rms_mean = self.return_rms_mean + delta * batch_count / total_count
+        
+        # Update variance using parallel variance formula
+        m_a = self.return_rms_var * self.return_rms_count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + delta ** 2 * self.return_rms_count * batch_count / total_count
+        self.return_rms_var = M2 / total_count
+        self.return_rms_count = total_count
+        
+        # Reset running return for environments that finished
+        self.running_return = self.running_return * (~done).float()
+        
+        # Normalize reward by sqrt(var) only (not mean, to preserve reward signal direction)
+        normalized_reward = reward / torch.sqrt(self.return_rms_var + 1e-8)
+        
+        # Clip to prevent extreme values
+        return torch.clamp(normalized_reward, -self.reward_clip, self.reward_clip)
+
     def _flatten_obs(self, obs):
         """Flatten dictionary observations into a single tensor."""
         if isinstance(obs, torch.Tensor):
@@ -401,6 +465,10 @@ class PPORunner:
             
             # Environment Step
             next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action)
+            
+            # Apply running reward normalization BEFORE storing
+            # Note: We normalize using `next_done` since that's when episodes end
+            reward = self._normalize_reward(reward, next_done)
             storage["rewards"][step] = reward
             
             # Accumulate reward components for logging (mean over entire rollout)
@@ -626,6 +694,19 @@ class PPORunner:
                     for i, name in enumerate(self.joint_names):
                         if i < len(action_std_vec):
                             logs[f"action_std/{name}"] = action_std_vec[i].item()
+                
+                # Log reward normalization statistics (for monitoring normalization quality)
+                if self.normalize_reward:
+                    logs["reward_norm/return_rms_var"] = self.return_rms_var.item()
+                    logs["reward_norm/return_rms_std"] = torch.sqrt(self.return_rms_var + 1e-8).item()
+                    logs["reward_norm/return_rms_mean"] = self.return_rms_mean.item()
+                    logs["reward_norm/return_rms_count"] = self.return_rms_count.item()
+                    # Log the actual normalized rewards from this rollout
+                    logs["reward_norm/raw_reward_mean"] = (container["rewards"] * torch.sqrt(self.return_rms_var + 1e-8)).mean().item()
+                    logs["reward_norm/normalized_reward_mean"] = container["rewards"].mean().item()
+                    logs["reward_norm/normalized_reward_std"] = container["rewards"].std().item()
+                    logs["reward_norm/normalized_reward_max"] = container["rewards"].max().item()
+                    logs["reward_norm/normalized_reward_min"] = container["rewards"].min().item()
 
                 if self.cfg.wandb.enabled:
                     wandb.log(logs, step=self.global_step)

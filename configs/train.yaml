@@ -34,8 +34,8 @@ training:
 # PPO hyperparameters
 ppo:
   learning_rate: 3e-4
-  gamma: 0.95
-  gae_lambda: 0.9
+  gamma: 0.99
+  gae_lambda: 0.95
   num_minibatches: 32
   update_epochs: 4
   clip_coef: 0.2
@@ -62,3 +62,7 @@ normalize_obs: true  # Whether to apply running normalization to observations
 init_obs_stats_from_config: true  # Initialize obs stats from config to stabilize early training
 obs_stats_tau: 0.001   # EMA decay rate for obs statistics (higher = faster adaptation)
 async_eval: true      # Run evaluation in background thread (non-blocking)
+
+# Reward Normalization (like gym.wrappers.NormalizeReward, but GPU-compatible)
+normalize_reward: true  # Whether to apply running reward normalization (disable by default)
+reward_clip: 10.0       # Clip normalized rewards to [-clip, clip]
