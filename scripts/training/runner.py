@@ -337,15 +337,15 @@ class PPORunner:
         if "tcp_pos" in obs_cfg:
             idxs = get_indices("tcp_pos")
             if len(idxs) == 3:
-                self.obs_ema_mean[idxs] = torch.tensor(obs_cfg.tcp_pos.mean, device=self.device)
-                self.obs_ema_var[idxs] = torch.tensor(obs_cfg.tcp_pos.std, device=self.device) ** 2
+                self.obs_rms_mean[idxs] = torch.tensor(obs_cfg.tcp_pos.mean, device=self.device)
+                self.obs_rms_var[idxs] = torch.tensor(obs_cfg.tcp_pos.std, device=self.device) ** 2
                 print(f"  Initialized tcp_pos stats at indices {idxs}")
         
         if "red_cube_pos" in obs_cfg:
             idxs = get_indices("red_cube_pos")
             if len(idxs) == 3:
-                self.obs_ema_mean[idxs] = torch.tensor(obs_cfg.red_cube_pos.mean, device=self.device)
-                self.obs_ema_var[idxs] = torch.tensor(obs_cfg.red_cube_pos.std, device=self.device) ** 2
+                self.obs_rms_mean[idxs] = torch.tensor(obs_cfg.red_cube_pos.mean, device=self.device)
+                self.obs_rms_var[idxs] = torch.tensor(obs_cfg.red_cube_pos.std, device=self.device) ** 2
                 print(f"  Initialized red_cube_pos stats at indices {idxs}")
         
         # Dual arm: also check green_cube_pos or other objects if task is sort
@@ -354,8 +354,8 @@ class PPORunner:
                 if obj in obs_cfg:
                     idxs = get_indices(obj)
                     if len(idxs) == 3:
-                        self.obs_ema_mean[idxs] = torch.tensor(obs_cfg[obj].mean, device=self.device)
-                        self.obs_ema_var[idxs] = torch.tensor(obs_cfg[obj].std, device=self.device) ** 2
+                        self.obs_rms_mean[idxs] = torch.tensor(obs_cfg[obj].mean, device=self.device)
+                        self.obs_rms_var[idxs] = torch.tensor(obs_cfg[obj].std, device=self.device) ** 2
                         print(f"  Initialized {obj} stats at indices {idxs}")
 
     def _normalize_obs(self, obs):
@@ -625,6 +625,11 @@ class PPORunner:
             )
             container["advantages"] = advs
             container["returns"] = rets
+            
+            # CRITICAL FIX: Normalize observations BEFORE flattening for PPO update
+            # This ensures the update phase sees the same distribution as the rollout phase
+            if self.normalize_obs:
+                container["obs"] = self._normalize_obs(container["obs"])
             
             # Flatten for PPO Update
             container_flat = container.view(-1)
