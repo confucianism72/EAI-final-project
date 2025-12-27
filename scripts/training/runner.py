@@ -145,10 +145,35 @@ class PPORunner:
             self.obs_ema_tau = cfg.get("obs_stats_tau", 0.01)  # EMA decay rate from config
             self.obs_ema_mean = torch.zeros(self.n_obs, device=self.device)
             self.obs_ema_var = torch.ones(self.n_obs, device=self.device)
+            
+            # Fetch observation names for granular logging
+            # Traverse wrappers to find the original Dict observation space
+            curr_env = self.envs
+            original_space = None
+            while hasattr(curr_env, "env"):
+                if hasattr(curr_env, "single_observation_space") and isinstance(curr_env.single_observation_space, gym.spaces.Dict):
+                    original_space = curr_env.single_observation_space
+                    break
+                curr_env = curr_env.env
+            
+            if original_space:
+                self.obs_names = self._get_obs_names(original_space)
+            else:
+                self.obs_names = [f"obs_{i}" for i in range(self.n_obs)]
+            print(f"Dynamic observation names for logging (count: {len(self.obs_names)})")
         
         # Reward mode for logging
         self.reward_mode = cfg.reward.get("reward_mode", "sparse")
         self.staged_reward = self.reward_mode == "staged_dense"
+        
+        # Get joint names from the environment's controller for robust logging
+        if hasattr(self.envs.unwrapped, "agent"):
+            # Joints in the order they appear in the action space
+            self.joint_names = [j.name for j in self.envs.unwrapped.agent.controller.joints]
+            print(f"Dynamic joint names for logging: {self.joint_names}")
+        else:
+            self.joint_names = [f"act_{i}" for i in range(self.n_act)]
+            print(f"Warning: Could not fetch joint names from env. Using generic names: {self.joint_names}")
         
         # Async eval infrastructure
         self.async_eval = cfg.get("async_eval", True)  # Enable async eval by default
@@ -198,6 +223,25 @@ class PPORunner:
         if self.cudagraphs:
             print("Applying CudaGraphModule to Policy (Inference Only)...")
             self.policy = CudaGraphModule(self.policy)
+
+    def _get_obs_names(self, space, prefix=""):
+        """Recursively get observation feature names from a space."""
+        names = []
+        if isinstance(space, gym.spaces.Dict):
+            # Sort keys to match FlattenStateWrapper / _flatten_obs order
+            for k in sorted(space.keys()):
+                new_prefix = f"{prefix}/{k}" if prefix else k
+                names.extend(self._get_obs_names(space[k], new_prefix))
+        elif hasattr(space, "shape") and space.shape:
+            flat_size = np.prod(space.shape)
+            if flat_size > 1:
+                for i in range(flat_size):
+                    names.append(f"{prefix}_{i}")
+            else:
+                names.append(prefix)
+        else:
+            names.append(prefix)
+        return names
 
     def _flatten_obs(self, obs):
         """Flatten dictionary observations into a single tensor."""
@@ -456,13 +500,23 @@ class PPORunner:
                 if self.log_obs_stats:
                     obs_std = torch.sqrt(torch.clamp(self.obs_ema_var, min=1e-8))
                     
-                    # Log overall statistics (sync to CPU only here)
+                    # Log overall summary statistics
                     logs["obs/mean_avg"] = self.obs_ema_mean.mean().item()
                     logs["obs/std_avg"] = obs_std.mean().item()
-                    logs["obs/mean_max"] = self.obs_ema_mean.abs().max().item()
-                    logs["obs/std_max"] = obs_std.max().item()
-                    logs["obs/std_min"] = obs_std.min().item()
+                    
+                    # Log granular per-feature EMA statistics
+                    for i, name in enumerate(self.obs_names):
+                        if i < len(self.obs_ema_mean):
+                            logs[f"obs_mean_ema/{name}"] = self.obs_ema_mean[i].item()
+                            logs[f"obs_std_ema/{name}"] = obs_std[i].item()
                 
+                # Log per-joint action std (for monitoring policy convergence)
+                with torch.no_grad():
+                    action_std_vec = torch.exp(self.agent.actor_logstd).flatten()
+                    for i, name in enumerate(self.joint_names):
+                        if i < len(action_std_vec):
+                            logs[f"action_std/{name}"] = action_std_vec[i].item()
+
                 if self.cfg.wandb.enabled:
                     wandb.log(logs, step=self.global_step)
                     
