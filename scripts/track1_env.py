@@ -137,7 +137,10 @@ class Track1Env(BaseEnv):
         self.approach_scale = reward_config.get("approach_scale", reward_config.get("reach_scale", 5.0))
         self.reach_scale = self.approach_scale
         
-        # Gripper reference point offsets
+        # Approach mode: 'tcp_midpoint' (single TCP center) or 'dual_point' (separate fixed/moving jaw)
+        self.approach_mode = reward_config.get("approach_mode", "dual_point")
+        
+        # Gripper reference point offsets (only used in dual_point mode)
         self.gripper_tip_offset = reward_config.get("gripper_tip_offset", 0.015)  # Along jaw, back from tip (1.5cm)
         self.gripper_outward_offset = reward_config.get("gripper_outward_offset", 0.015)  # Perpendicular, outward for cube thickness (1.5cm)
         
@@ -1536,34 +1539,48 @@ class Track1Env(BaseEnv):
         w = self.reward_weights
         thresholds = self.stage_thresholds
         
-        # Get gripper reference position (gripper_frame_link = jaw tip)
-        gripper_pos = self._get_gripper_pos()
         cube_pos = self.red_cube.pose.p
-        distance = torch.norm(gripper_pos - cube_pos, dim=1)
         cube_height = cube_pos[:, 2]
         
-        # 1. Approach reward (fixed jaw): piecewise linear
-        # Full reward within threshold, linear decay to zero at zero_point
+        # Approach reward calculation based on approach_mode
         threshold = self.approach_threshold
         zero_point = self.approach_zero_point
         
-        approach_reward = torch.where(
-            distance < threshold,
-            torch.ones_like(distance),  # Full reward within threshold
-            torch.clamp(1.0 - (distance - threshold) / (zero_point - threshold), min=0.0)
-        )
-        
-        # 2. Approach2 reward (moving jaw): same piecewise linear formula
-        moving_jaw_pos = self._get_moving_jaw_pos()
-        distance2 = torch.norm(moving_jaw_pos - cube_pos, dim=1)
-        threshold2 = self.approach2_threshold
-        zero_point2 = self.approach2_zero_point
-        
-        approach2_reward = torch.where(
-            distance2 < threshold2,
-            torch.ones_like(distance2),
-            torch.clamp(1.0 - (distance2 - threshold2) / (zero_point2 - threshold2), min=0.0)
-        )
+        if self.approach_mode == "tcp_midpoint":
+            # TCP midpoint mode: single distance from TCP center to cube (like reference implementation)
+            tcp_pos = self.right_arm.tcp_pos
+            distance = torch.norm(tcp_pos - cube_pos, dim=1)
+            
+            approach_reward = torch.where(
+                distance < threshold,
+                torch.ones_like(distance),
+                torch.clamp(1.0 - (distance - threshold) / (zero_point - threshold), min=0.0)
+            )
+            # No approach2 in tcp_midpoint mode
+            approach2_reward = torch.zeros_like(approach_reward)
+        else:
+            # Dual-point mode: separate fixed jaw and moving jaw approach rewards
+            # 1. Approach reward (fixed jaw)
+            gripper_pos = self._get_gripper_pos()
+            distance = torch.norm(gripper_pos - cube_pos, dim=1)
+            
+            approach_reward = torch.where(
+                distance < threshold,
+                torch.ones_like(distance),
+                torch.clamp(1.0 - (distance - threshold) / (zero_point - threshold), min=0.0)
+            )
+            
+            # 2. Approach2 reward (moving jaw)
+            moving_jaw_pos = self._get_moving_jaw_pos()
+            distance2 = torch.norm(moving_jaw_pos - cube_pos, dim=1)
+            threshold2 = self.approach2_threshold
+            zero_point2 = self.approach2_zero_point
+            
+            approach2_reward = torch.where(
+                distance2 < threshold2,
+                torch.ones_like(distance2),
+                torch.clamp(1.0 - (distance2 - threshold2) / (zero_point2 - threshold2), min=0.0)
+            )
         
         # 3. Horizontal displacement: cube XY displacement from initial position (positive value)
         # initial_cube_xy is set during episode initialization
@@ -1629,8 +1646,9 @@ class Track1Env(BaseEnv):
             effective_lift_reward = lift_reward
         
         # Weighted sum (use negative weights for penalties)
+        # In dual_point mode, approach weight is used for both approach and approach2
         reward = (w["approach"] * approach_reward +
-                  w.get("approach2", 0.0) * approach2_reward +
+                  w["approach"] * approach2_reward +  # Same weight as approach in dual_point mode
                   w.get("grasp", 0.0) * grasp_reward +
                   w["horizontal_displacement"] * horizontal_displacement +
                   w["lift"] * effective_lift_reward + 
@@ -1643,12 +1661,14 @@ class Track1Env(BaseEnv):
         # Success/Fail: count of envs (discrete events)
         info["reward_components"] = {
             "approach": (w["approach"] * approach_reward).mean().item(),
-            "approach2": (w.get("approach2", 0.0) * approach2_reward).mean().item(),
             "grasp": (w.get("grasp", 0.0) * grasp_reward).mean().item(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean().item(),
             "lift": (w["lift"] * effective_lift_reward).mean().item(),
             "action_rate": (w.get("action_rate", 0.0) * action_rate).mean().item(),
         }
+        # Only log approach2 in dual_point mode
+        if self.approach_mode == "dual_point":
+            info["reward_components"]["approach2"] = (w["approach"] * approach2_reward).mean().item()
         # Track success/fail/grasp counts separately (not averaged)
         info["success_count"] = success.sum().item()
         info["fail_count"] = fail.sum().item()

@@ -6,8 +6,7 @@ reward_type: "parallel"
 
 # Reward weights (use negative for penalty)
 weights:
-  approach: 2.0        # Approach cube (fixed jaw reference point → cube center)
-  approach2: 2.0       # Approach cube (moving jaw reference point → cube center)
+  approach: 2.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
   grasp: 1.0           # Bonus for successfully grasping the cube (binary)
   horizontal_displacement: -25.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
@@ -22,6 +21,12 @@ gate_lift_with_grasp: true
 # Fixed jaw approach reward curve (piecewise linear)
 # reward = 1.0 if distance < threshold
 # reward = linear decay from 1.0 to 0.0 between threshold and zero_point
+#
+# approach_mode options:
+#   - "tcp_midpoint": Use TCP center (fingertips midpoint) like reference implementation
+#   - "dual_point": Use separate fixed jaw (approach) and moving jaw (approach2) points
+approach_mode: "tcp_midpoint"
+
 approach_threshold: 0.01     # Distance for full reward (1cm)
 approach_zero_point: 0.20    # Distance where reward becomes 0 (20cm)
 
