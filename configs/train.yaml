@@ -56,3 +56,4 @@ checkpoint: null
 # Debugging/Monitoring
 log_obs_stats: false  # Log mean/std of observation inputs (useful for monitoring normalization)
 obs_stats_tau: 0.01   # EMA decay rate for obs statistics (higher = faster adaptation)
+async_eval: true      # Run evaluation in background thread (non-blocking)

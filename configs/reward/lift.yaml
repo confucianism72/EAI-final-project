@@ -6,8 +6,8 @@ reward_type: "parallel"
 
 # Reward weights (use negative for penalty)
 weights:
-  approach: 2.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
-  grasp: 1.0           # Bonus for successfully grasping the cube (binary)
+  approach: 20.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
+  grasp: 100.0           # Bonus for successfully grasping the cube (binary)
   horizontal_displacement: -25.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
   action_rate: -1.0    # Penalize action changes (anti-jitter), range ~[0, 0.2]

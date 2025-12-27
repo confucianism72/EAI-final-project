@@ -13,6 +13,8 @@ from functools import partial
 from pathlib import Path
 import sys
 import subprocess
+import threading
+import copy
 
 import gymnasium as gym
 import hydra
@@ -146,6 +148,12 @@ class PPORunner:
         # Reward mode for logging
         self.reward_mode = cfg.reward.get("reward_mode", "sparse")
         self.staged_reward = self.reward_mode == "staged_dense"
+        
+        # Async eval infrastructure
+        self.async_eval = cfg.get("async_eval", True)  # Enable async eval by default
+        self.eval_thread = None
+        self.eval_stream = torch.cuda.Stream() if self.async_eval else None
+        self.eval_agent_snapshot = None  # Will hold model weights snapshot during async eval
 
     def _setup_compiled_functions(self):
         """Setup torch.compile and CudaGraphModule."""
@@ -446,15 +454,39 @@ class PPORunner:
             # Accumulate training time for this iteration
             training_time += time.time() - iter_start_time
             
-            # Evaluation (timed separately)
+            # Evaluation (async or sync based on config)
             if iteration % self.cfg.training.eval_freq == 0:
-                eval_start = time.time()
-                self._evaluate()
-                eval_duration = time.time() - eval_start
-                print(f"  Eval took {eval_duration:.2f}s")
-                if self.cfg.wandb.enabled:
-                    wandb.log({"charts/eval_time": eval_duration}, step=self.global_step)
-                self._save_checkpoint(iteration)
+                if self.async_eval:
+                    # Async eval: launch in background, don't block training
+                    if self.eval_thread is not None and self.eval_thread.is_alive():
+                        # Wait for previous eval to finish before starting new one
+                        self.eval_thread.join()
+                    
+                    # Snapshot model weights for eval (deep copy to avoid race conditions)
+                    self.eval_agent_snapshot = copy.deepcopy(self.agent.state_dict())
+                    
+                    # Launch async eval
+                    self.eval_thread = threading.Thread(
+                        target=self._evaluate_async,
+                        args=(iteration,),
+                        daemon=True
+                    )
+                    self.eval_thread.start()
+                    print(f"  [Async] Eval launched in background (iteration {iteration})")
+                else:
+                    # Sync eval (blocking)
+                    eval_start = time.time()
+                    self._evaluate()
+                    eval_duration = time.time() - eval_start
+                    print(f"  Eval took {eval_duration:.2f}s")
+                    if self.cfg.wandb.enabled:
+                        wandb.log({"charts/eval_time": eval_duration}, step=self.global_step)
+                    self._save_checkpoint(iteration)
+        
+        # Wait for any running async eval to complete before cleanup
+        if self.async_eval and self.eval_thread is not None and self.eval_thread.is_alive():
+            print("Waiting for async eval to complete...")
+            self.eval_thread.join()
         
         self.envs.close()
         self.eval_envs.close()
@@ -583,6 +615,40 @@ class PPORunner:
                         writer.writerows(steps)
             
             self.eval_count += 1  # Increment for next eval
+
+    def _evaluate_async(self, iteration):
+        """Run evaluation asynchronously in a background thread.
+        
+        Uses a separate CUDA stream and model snapshot to avoid blocking training.
+        """
+        eval_start = time.time()
+        
+        # Run all CUDA operations on a separate stream
+        with torch.cuda.stream(self.eval_stream):
+            # Create a temporary agent with snapshot weights for eval
+            # We use the same agent object but load snapshot weights
+            original_state = self.agent.state_dict()
+            self.agent.load_state_dict(self.eval_agent_snapshot)
+            
+            try:
+                # Run the actual evaluation
+                self._evaluate()
+            finally:
+                # Restore original weights after eval
+                self.agent.load_state_dict(original_state)
+        
+        # Sync this stream before logging (ensure eval is complete)
+        self.eval_stream.synchronize()
+        
+        eval_duration = time.time() - eval_start
+        print(f"  [Async] Eval completed (iteration {iteration}, took {eval_duration:.2f}s)")
+        
+        if self.cfg.wandb.enabled:
+            # Log from background thread (wandb is thread-safe)
+            wandb.log({"charts/eval_time": eval_duration}, step=self.global_step)
+        
+        # Save checkpoint after eval completes
+        self._save_checkpoint(iteration)
 
     def _save_checkpoint(self, iteration):
         """Save model checkpoint."""
