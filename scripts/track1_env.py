@@ -225,8 +225,19 @@ class Track1Env(BaseEnv):
         self.grasp_min_force = reward_config.get("grasp_min_force", 0.5)
         self.grasp_max_angle = reward_config.get("grasp_max_angle", 110)
         
-        # Grasp reward weight
+        # Grasp reward weight (base weight for adaptive scaling)
         self.reward_weights["grasp"] = weights.get("grasp", 0.0)
+        
+        # Adaptive grasp weight: scale by inverse success rate
+        # dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
+        adaptive_cfg = reward_config.get("adaptive_grasp_weight", {})
+        self.adaptive_grasp_enabled = adaptive_cfg.get("enabled", False)
+        self.adaptive_grasp_alpha = adaptive_cfg.get("alpha", 0.5)  # Exponent for inverse scaling
+        self.adaptive_grasp_eps = adaptive_cfg.get("eps", 0.01)     # Floor for success rate
+        self.adaptive_grasp_max = adaptive_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
+        self.adaptive_grasp_tau = adaptive_cfg.get("tau", 0.01)     # EMA decay for tracking
+        # EMA of grasp success rate (initialized lazily in _compute_dense_reward when device is available)
+        self.grasp_success_rate = None
         
         # Gated lift reward: only give lift reward when is_grasped=True
         self.gate_lift_with_grasp = reward_config.get("gate_lift_with_grasp", False)
@@ -1710,6 +1721,25 @@ class Track1Env(BaseEnv):
         )
         grasp_reward = is_grasped.float()  # 0 or 1
         
+        # Adaptive grasp weight: scale by inverse success rate
+        if self.adaptive_grasp_enabled:
+            # Lazy initialization of grasp_success_rate (device not available in __init__)
+            if self.grasp_success_rate is None:
+                self.grasp_success_rate = torch.tensor(self.adaptive_grasp_eps, device=self.device)
+            
+            # Update EMA of grasp success rate
+            batch_success_rate = grasp_reward.mean()
+            self.grasp_success_rate = self.grasp_success_rate * (1 - self.adaptive_grasp_tau) + batch_success_rate * self.adaptive_grasp_tau
+            
+            # Compute dynamic weight: base * (1 / rate)^alpha, capped at max
+            dynamic_grasp_weight = w.get("grasp", 0.0) * torch.pow(
+                1.0 / (self.grasp_success_rate + self.adaptive_grasp_eps),
+                self.adaptive_grasp_alpha
+            )
+            dynamic_grasp_weight = torch.clamp(dynamic_grasp_weight, max=self.adaptive_grasp_max)
+        else:
+            dynamic_grasp_weight = w.get("grasp", 0.0)
+        
         # 9. Apply gated lift reward if configured
         # Only give lift reward when grasping the cube
         if self.gate_lift_with_grasp:
@@ -1721,7 +1751,7 @@ class Track1Env(BaseEnv):
         # In dual_point mode, approach weight is used for both approach and approach2
         reward = (w["approach"] * approach_reward +
                   w["approach"] * approach2_reward +  # Same weight as approach in dual_point mode
-                  w.get("grasp", 0.0) * grasp_reward +
+                  dynamic_grasp_weight * grasp_reward +
                   w["horizontal_displacement"] * horizontal_displacement +
                   w["lift"] * effective_lift_reward + 
                   w.get("action_rate", 0.0) * action_rate +
@@ -1732,11 +1762,15 @@ class Track1Env(BaseEnv):
         # Runner will call .item() only when logging is needed
         info["reward_components"] = {
             "approach": (w["approach"] * approach_reward).mean(),
-            "grasp": (w.get("grasp", 0.0) * grasp_reward).mean(),
+            "grasp": (dynamic_grasp_weight * grasp_reward).mean(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean(),
             "lift": (w["lift"] * effective_lift_reward).mean(),
             "action_rate": (w.get("action_rate", 0.0) * action_rate).mean(),
         }
+        # Log adaptive grasp weight metrics if enabled
+        if self.adaptive_grasp_enabled:
+            info["reward_components"]["grasp_dynamic_weight"] = dynamic_grasp_weight
+            info["reward_components"]["grasp_success_rate"] = self.grasp_success_rate
         # Only log approach2 in dual_point mode
         if self.approach_mode == "dual_point":
             info["reward_components"]["approach2"] = (w["approach"] * approach2_reward).mean()

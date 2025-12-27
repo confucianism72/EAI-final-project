@@ -7,12 +7,22 @@ reward_type: "parallel"
 # Reward weights (use negative for penalty)
 weights:
   approach: 20.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
-  grasp: 100.0           # Bonus for successfully grasping the cube (binary)
+  grasp: 100.0           # Bonus for successfully grasping the cube (binary, base weight if adaptive)
   horizontal_displacement: -25.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
   action_rate: -1.0    # Penalize action changes (anti-jitter), range ~[0, 0.2]
   success: 100.0        # Task completion bonus
   fail: -100.0         # Penalty when cube goes out of bounds
+
+# Adaptive grasp weight: dynamically scale grasp reward by inverse success rate
+# Formula: dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
+# This boosts rare events (successful grasps) to provide stronger learning signal
+adaptive_grasp_weight:
+  enabled: true         # Enable adaptive weighting
+  alpha: 0.5            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
+  eps: 0.01             # Floor for success rate to prevent division by zero
+  max_weight: 1000.0    # Cap to prevent weight explosion
+  tau: 0.01             # EMA decay rate for tracking success rate
 
 # Gated lift reward: only give lift reward when is_grasped=True
 # This prevents the agent from pushing the cube up without grasping it
